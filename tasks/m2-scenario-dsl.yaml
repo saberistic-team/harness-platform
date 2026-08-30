@@ -1,0 +1,49 @@
+id: m2-scenario-dsl
+title: "Scenario DSL validation in @harness/sdk (YAML -> invariants)"
+goal: >
+  Home the scenario DSL (ROADMAP M2, "eval credibility") in the same
+  package that validates task manifests and run reports:
+  packages/sdk/src/scenario-dsl.ts owns the zod schemas (scenario,
+  script, expect, event invariants with data.<path> assertions),
+  ScenarioParseError, decodeScenario, toEventInvariant, and adds
+  loadScenario(yamlText) so YAML text -> typed invariants is one call.
+  The eval runner (evals/runner/scenario.ts) becomes a re-export shim,
+  keeping its import surface stable. SDK tests pin YAML -> invariants
+  and the typed-error gates (unknown event type, bad invariant key,
+  empty expect, invalid YAML).
+
+acceptance:
+  - "@harness/sdk exports the full scenario DSL (scenarioSchema, decodeScenario, loadScenario, ScenarioParseError)"
+  - evals/runner/scenario.ts re-exports from @harness/sdk and
+    `pnpm evals` still passes on kernel-0001-golden
+  - New SDK tests cover YAML -> invariants and typed errors
+  - pnpm test and pnpm typecheck are green
+
+allowed_paths:
+  - packages/sdk/**
+  - evals/**
+  - tasks/**
+  - pnpm-lock.yaml
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test*": allow
+    "pnpm typecheck*": allow
+    "pnpm evals*": allow
+    "pnpm install*": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git checkout*": allow
+    "git diff*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request

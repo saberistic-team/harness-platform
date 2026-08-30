@@ -127,6 +127,9 @@ importers:
 
   packages/sdk:
     dependencies:
+      '@harness/events':
+        specifier: workspace:*
+        version: link:../events
       '@harness/policy':
         specifier: workspace:*
         version: link:../policy
