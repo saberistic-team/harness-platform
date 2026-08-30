@@ -1,0 +1,49 @@
+id: m2-web-task-board
+title: "apps/web: minimal task board (manifests + reports, no real-time)"
+goal: >
+  Build the first real apps/web (ROADMAP M2, "eval credibility"): a
+  read-only task board of task manifests (tasks/*.yaml) and run
+  reports (tasks/runs/*.json). Data layer (board.ts) reads and
+  validates everything through @harness/sdk; invalid manifests and
+  invalid reports surface as typed items, never silently skipped.
+  Served by node:http (no framework — explicit repo non-goal): board
+  page + JSON API (/api/board, /api/tasks/:id, /api/reports/:file,
+  /api/health); harness-web bin launcher. Refresh is a manual pull —
+  no websocket, no polling, by the roadmap wording.
+
+acceptance:
+  - the board lists every valid task manifest with its run reports,
+    newest first, and renders acceptance + allowed_paths
+  - invalid manifest files and invalid run report files are shown as
+    typed errors with their validation issues
+  - the HTTP API is read-only (GET), typed 404/405/422 on bad input,
+    and report names cannot escape tasks/runs/
+  - no new web framework or build toolchain is added
+  - pnpm test and pnpm typecheck are green
+
+allowed_paths:
+  - apps/web/**
+  - tasks/**
+  - pnpm-lock.yaml
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test*": allow
+    "pnpm typecheck*": allow
+    "pnpm install*": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git checkout*": allow
+    "git diff*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request

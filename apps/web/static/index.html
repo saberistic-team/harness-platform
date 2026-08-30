@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>harness — task board</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0f1115; --card: #171a21; --line: #262b36;
+    --fg: #dfe3ea; --dim: #8a93a3;
+    --ok: #3fb950; --bad: #f85149; --block: #d29922; --idle: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+         background: var(--bg); color: var(--fg); }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px;
+           border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .root { color: var(--dim); font-size: 12px; }
+  header button { margin-left: auto; background: var(--card); border: 1px solid var(--line);
+                  color: var(--fg); padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  header button:hover { border-color: var(--idle); }
+  main { padding: 18px 20px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .card h2 { margin: 0 0 4px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .card .id { color: var(--dim); font-size: 12px; margin-bottom: 8px; }
+  .card dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 8px 0 0; font-size: 12px; }
+  .card dt { color: var(--dim); }
+  .card dd { margin: 0; overflow-wrap: anywhere; }
+  .badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid; }
+  .badge.passed   { color: var(--ok);    border-color: var(--ok); }
+  .badge.failed   { color: var(--bad);   border-color: var(--bad); }
+  .badge.blocked  { color: var(--block); border-color: var(--block); }
+  .badge.never    { color: var(--idle);  border-color: var(--idle); }
+  .rep { display: flex; gap: 8px; align-items: baseline; font-size: 12px; padding: 3px 0; border-top: 1px solid var(--line); }
+  .rep .when { color: var(--dim); }
+  .invalid { border-color: var(--block); }
+  .invalid li { color: var(--block); font-size: 12px; }
+  ul { margin: 6px 0 0; padding-left: 18px; }
+  ul li { margin: 2px 0; font-size: 12px; }
+  footer { padding: 10px 20px; color: var(--dim); font-size: 12px; border-top: 1px solid var(--line); }
+  .empty { grid-column: 1 / -1; color: var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>harness — task board</h1>
+  <span class="root" id="root"></span>
+  <button id="refresh" type="button">refresh</button>
+</header>
+<main id="board"><div class="empty">loading…</div></main>
+<footer id="foot">read-only view of tasks/ + tasks/runs/ — refresh is manual, there is no real-time channel (by design)</footer>
+
+<script>
+"use strict";
+
+async function getJson(url) {
+  const res = await fetch(url, { headers: { accept: "application/json" } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? (url + " -> " + res.status));
+  return body;
+}
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+function badge(status) {
+  const label = status ?? "never run";
+  return el("span", "badge " + (status ?? "never"), label);
+}
+
+function renderTask(task) {
+  const card = el("div", "card");
+  const h2 = el("h2");
+  h2.append(el("span", null, task.manifest.title), badge(task.reports[0] && task.reports[0].status));
+  card.append(h2);
+  card.append(el("div", "id", task.manifest.id));
+
+  const dl = document.createElement("dl");
+  const rows = [
+    ["goal", task.manifest.goal.trim().replace(/\s+/g, " ")],
+    ["allowed_paths", task.manifest.allowed_paths.join(", ")],
+    ["runs", String(task.reports.length)],
+  ];
+  for (const [k, v] of rows) {
+    dl.append(el("dt", null, k), el("dd", null, v));
+  }
+  card.append(dl);
+
+  const acc = el("ul");
+  for (const a of task.manifest.acceptance) acc.append(el("li", null, a));
+  card.append(acc);
+
+  for (const r of task.reports) {
+    const rep = el("div", "rep");
+    rep.append(
+      badge(r.status),
+      el("span", "when", r.finishedAt),
+      el("span", null, "branch " + r.branch),
+    );
+    card.append(rep);
+  }
+  return card;
+}
+
+function renderInvalid(kind, item) {
+  const card = el("div", "card invalid");
+  card.append(el("h2", null, kind + " (typed error)"));
+  card.append(el("div", "id", item.manifestPath ?? item.reportPath));
+  const ul = el("ul");
+  for (const i of item.issues ?? [item.issue]) ul.append(el("li", null, i));
+  card.append(ul);
+  return card;
+}
+
+async function refresh() {
+  const boardMain = document.getElementById("board");
+  let board;
+  try {
+    board = await getJson("/api/board");
+  } catch (err) {
+    boardMain.replaceChildren(el("div", "empty", "board error: " + err.message));
+    return;
+  }
+  document.getElementById("root").textContent = board.root;
+  boardMain.replaceChildren();
+  if (board.tasks.length === 0 && board.invalidManifests.length === 0) {
+    boardMain.append(el("div", "empty", "no task manifests under " + board.root + "/tasks"));
+  }
+  for (const t of board.tasks) boardMain.append(renderTask(t));
+  for (const m of board.invalidManifests) boardMain.append(renderInvalid("invalid manifest", m));
+  for (const r of board.invalidReports) boardMain.append(renderInvalid("invalid run report", r));
+  document.getElementById("foot").textContent =
+    "generatedAt " + board.generatedAt + " — read-only view of tasks/ + tasks/runs/" +
+    " (no real-time channel, by design)";
+}
+
+document.getElementById("refresh").addEventListener("click", refresh);
+refresh();
+</script>
+</body>
+</html>
