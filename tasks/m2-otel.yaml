@@ -1,0 +1,63 @@
+id: m2-otel
+title: "OpenTelemetry wiring end-to-end (kernel -> CLI -> local collector)"
+goal: >
+  Wire the harness event stream into OpenTelemetry (ROADMAP M2,
+  "eval credibility"). packages/otel adds an EventBridge that turns
+  @harness/events into spans (harness.session run root;
+  harness.model.request and harness.tool.call children; budget,
+  policy, and error events recorded as span events) and counters
+  (model turns/tokens, tool calls, budget warnings). One run = one
+  trace. createHarnessTelemetry assembles providers with three sinks:
+  OTLP/HTTP to the local collector when OTEL_EXPORT_OTLP_ENDPOINT is
+  set, a console sink otherwise (HARNESS_OTEL=1), and an in-memory
+  test seam. The CLI (harness run) and the eval runner pass their
+  event streams through the same bridge, and infra/otel-collector
+  ships the local collector (compose profile "otel"). Telemetry is
+  fully OFF unless env opts in, so the default lane stays clean and
+  offline (rule 7).
+
+acceptance:
+  - the golden kernel's event stream produces one trace with a run
+    span, per-model and per-tool child spans, correct statuses
+    (OK/ERROR), via the in-memory test seam
+  - model turns, tokens, and tool calls are counted as metrics
+  - harness run and pnpm evals emit their spans through the bridge
+    when HARNESS_OTEL=1 (console sink), with an explicit summary line
+  - OTEL_EXPORT_OTLP_ENDPOINT switches the sink to OTLP/HTTP
+  - a local collector is available as a compose profile ("otel"),
+    with a pinned image and config in infra/otel-collector
+  - default behavior is unchanged with no env config (tests green
+    offline)
+
+allowed_paths:
+  - packages/otel/**
+  - apps/cli/**
+  - evals/**
+  - infra/**
+  - AGENTS.md
+  - tasks/**
+  - pnpm-lock.yaml
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test*": allow
+    "pnpm typecheck*": allow
+    "pnpm install*": allow
+    "pnpm evals*": allow
+    "node --test*": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git checkout*": allow
+    "git diff*": allow
+    "*": deny
+  network: allow
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request

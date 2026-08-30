@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@harness/events": "workspace:*",
+    "@harness/otel": "workspace:*",
     "@harness/policy": "workspace:*",
     "@harness/sdk": "workspace:*",
     "@harness/sessions": "workspace:*",

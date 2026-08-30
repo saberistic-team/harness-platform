@@ -23,6 +23,7 @@ packages/sessions    Append-only session/event logs (SQLite, node:sqlite)
 packages/workspace   Path scoping (escape-safe resolution)
 packages/mcp         MCP wire-shape types (client in M2)
 packages/acp         Agent Client Protocol types (server in M3)
+packages/otel        Event stream -> OTel spans/metrics (M2; kernel/CLI -> collector)
 packages/sdk         Task manifest (input contract) + run report (output contract)
 apps/cli             Exit-gate CLI:  harness validate | harness run
 apps/tui             Read-only session/event viewer (harness-view; M1)

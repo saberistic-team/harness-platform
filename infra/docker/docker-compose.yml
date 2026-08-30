@@ -4,6 +4,19 @@
 # Kubernetes manifests come in M4 once the control plane exists.
 
 services:
+  # Local OpenTelemetry collector (ROADMAP M2). Behind a compose
+  # profile so the default `docker compose up` lane is unchanged:
+  #   docker compose --profile otel up otel-collector
+  # then: OTEL_EXPORT_OTLP_ENDPOINT=http://127.0.0.1:4318 pnpm evals
+  otel-collector:
+    image: otel/opentelemetry-collector:0.110.0
+    command: ["--config=/etc/otel-collector/config.yaml"]
+    profiles: ["otel"]
+    ports:
+      - "4318:4318"
+    volumes:
+      - ../otel-collector/config.yaml:/etc/otel-collector/config.yaml:ro
+
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"

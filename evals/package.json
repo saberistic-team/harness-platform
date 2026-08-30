@@ -12,6 +12,7 @@
     "@harness/events": "workspace:*",
     "@harness/kernel": "workspace:*",
     "@harness/models": "workspace:*",
+    "@harness/otel": "workspace:*",
     "@harness/sdk": "workspace:*",
     "yaml": "^2.6.0",
     "zod": "^3.24.0"

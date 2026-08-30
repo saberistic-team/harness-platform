@@ -11,6 +11,11 @@ import {
 import { loadTaskManifestFile, type TaskManifest } from "@harness/sdk";
 import { compileRules, pathAllowed } from "@harness/policy";
 import {
+  createHarnessTelemetry,
+  telemetryFromEnv,
+  type HarnessTelemetry,
+} from "@harness/otel";
+import {
   changedPaths,
   currentBranch,
   ensureBranch,
@@ -128,8 +133,27 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
     at: new Date().toISOString(),
     actor: "harness-cli",
   });
-  const push = (e: Parameters<typeof serializeEvent>[0]) => {
+
+  // M2 OpenTelemetry wiring: the CLI's own event stream (task.updated,
+  // policy.decision, run.recorded, error) goes through the SAME bridge
+  // as the kernel's, so "harness run" lands in the collector alongside
+  // `pnpm evals` runs. Off unless HARNESS_OTEL=1 / OTEL_* are set, so
+  // the default gate lane stays dependency-free.
+  let telemetry: HarnessTelemetry | undefined;
+  const otelOpts = telemetryFromEnv();
+  if (otelOpts !== null) {
+    try {
+      telemetry = await createHarnessTelemetry(otelOpts);
+    } catch (err) {
+      console.error(
+        `otel: telemetry disabled: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  const push = (e: import("@harness/events").AnyHarnessEvent) => {
     events.push(serializeEvent(e));
+    telemetry?.bridge.onEvent(e);
   };
 
   const reportDir = join(cwd, "tasks", "runs");
@@ -281,6 +305,22 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
     reportPath,
     `${JSON.stringify(finalReport, null, 2)}\n`,
   );
+
+  // Flush telemetry BEFORE reporting so the collector has the run's
+  // spans when the gate finishes (order matters for the evidence).
+  if (telemetry) {
+    try {
+      await telemetry.forceFlush();
+      await telemetry.shutdown();
+      console.error(
+        `otel: exported the run's spans via ${telemetry.kind} sink (service=${otelOpts?.serviceName ?? "harness"})`,
+      );
+    } catch (err) {
+      console.error(
+        `otel: shutdown failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   const exitCode = outcome === "passed" ? 0 : 1;
   return { exitCode, report: finalReport, reportPath };

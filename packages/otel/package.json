@@ -1,0 +1,25 @@
+{
+  "name": "@harness/otel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenTelemetry wiring for the harness: kernel/CLI event stream -> spans + metrics -> local collector (or console).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@harness/events": "workspace:*",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.221.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
+    "@opentelemetry/resources": "^2.10.0",
+    "@opentelemetry/sdk-metrics": "^2.10.0",
+    "@opentelemetry/sdk-trace-node": "^2.10.0"
+  },
+  "devDependencies": {
+    "@harness/kernel": "workspace:*",
+    "@harness/models": "workspace:*",
+    "@harness/tools": "workspace:*",
+    "zod": "^3.24.0"
+  }
+}

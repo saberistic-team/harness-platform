@@ -10,6 +10,11 @@ import {
   type RunContext,
   type ScenarioOutcome,
 } from "./runner/index";
+import {
+  createHarnessTelemetry,
+  telemetryFromEnv,
+  type HarnessTelemetry,
+} from "@harness/otel";
 
 /**
  * Scenario runner CLI (M1).
@@ -104,13 +109,33 @@ export async function runScenarios(argv: string[]): Promise<number> {
 
   let failures = 0;
   const outcomes: ScenarioOutcome[] = [];
+
+  // M2 OTel wiring: the golden runs emit the SAME harness events the
+  // kernel/CLI do; the bridge turns them into spans so `pnpm evals`
+  // lights up the local collector (HARNESS_OTEL=1 / OTEL_* env).
+  let telemetry: HarnessTelemetry | undefined;
+  const otelOpts = telemetryFromEnv();
+  if (otelOpts !== null) {
+    try {
+      telemetry = await createHarnessTelemetry(otelOpts);
+    } catch (err) {
+      console.error(
+        `otel: telemetry disabled: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   for (const p of paths) {
     const rel = resolve(repoRoot, p);
     const scenario = loadScenario(p);
     const taskPaths = scenario.uses_tasks.map((t) => taskPathFor(repoRoot, t));
     let outcome: ScenarioOutcome;
     try {
-      const ctx: RunContext = { repoRoot, reportPath: opts.reportPath };
+      const ctx: RunContext = {
+        repoRoot,
+        reportPath: opts.reportPath,
+        onEvent: telemetry ? (e) => telemetry?.bridge.onEvent(e) : undefined,
+      };
       outcome = await executeScenario(ctx, scenario, taskPaths);
     } catch (err) {
       if (err instanceof InvariantCheckError) {
@@ -143,6 +168,17 @@ export async function runScenarios(argv: string[]): Promise<number> {
 
   const passed = outcomes.filter((o) => o.ok).length;
   console.log(`\n${passed}/${outcomes.length} scenarios passed`);
+
+  if (telemetry) {
+    try {
+      await telemetry.forceFlush();
+      await telemetry.shutdown();
+      console.log(`otel: exported ${outcomes.length} golden run(s) via ${telemetry.kind} sink`);
+    } catch (err) {
+      console.error(`otel: shutdown failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   return failures === 0 ? 0 : 1;
 }
 

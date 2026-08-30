@@ -29,6 +29,8 @@ export interface RunContext {
   repoRoot: string;
   /** Optional: the exit-gate run report to check `expect.report` against. */
   reportPath?: string;
+  /** M2: observe the golden kernel's live event stream (OTel bridge). */
+  onEvent?: (event: import("@harness/events").AnyHarnessEvent) => void;
 }
 
 export interface ScenarioOutcome {
@@ -104,6 +106,7 @@ async function runGoldenTask(
     sessionId: `sess-scenario-${manifest.id}`,
     now,
     newId,
+    onEvent: ctx.onEvent,
   });
 
   return { manifest, result, events: result.events };
