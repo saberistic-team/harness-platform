@@ -30,7 +30,16 @@ export interface Decision {
   rule?: string | SubjectRule;
 }
 
-function globToRegExp(pattern: string): RegExp {
+/**
+ * Translate a glob pattern into the body of an anchored regular
+ * expression. Exported so the rule compiler (rules.ts) can build its
+ * matchers from the single source of truth.
+ *   *  -> [^/]*      (does not cross path segments)
+ *   ** -> .*         (crosses path segments; a trailing / is consumed)
+ *   ?  -> [^/]
+ * Everything else is literal (regex metacharacters escaped).
+ */
+export function translate(pattern: string): string {
   let out = "";
   for (let i = 0; i < pattern.length; i++) {
     const c = pattern[i];
@@ -50,10 +59,17 @@ function globToRegExp(pattern: string): RegExp {
       out += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
     }
   }
-  return new RegExp(`^${out}$`);
+  return out;
 }
 
-const RANK: Record<Effect, number> = { allow: 0, ask: 1, deny: 2 };
+function globToRegExp(pattern: string): RegExp {
+  return new RegExp(`^${translate(pattern)}$`);
+}
+
+/** Effect precedence used to break ties between equally specific rules. */
+export const RANK_EXPORT: Record<Effect, number> = { allow: 0, ask: 1, deny: 2 };
+
+const RANK: Record<Effect, number> = RANK_EXPORT;
 
 export function matchGlob(pattern: string, value: string): boolean {
   return globToRegExp(pattern).test(value);
@@ -88,6 +104,7 @@ export function decide(
   if (subject !== undefined) {
     let best: { pattern: string; effect: Effect; score: number } | undefined;
     for (const [pattern, effect] of Object.entries(rule)) {
+      if (pattern === "*") continue; // "*" is the fallback, not a subject pattern
       if (matchGlob(pattern, subject)) {
         const candidate = { pattern, effect, score: pattern.length };
         if (
@@ -152,3 +169,5 @@ export function checkChangedPaths(
   const violations = changedPaths.filter((p) => !pathAllowed(allowedPaths, p));
   return { ok: violations.length === 0, violations };
 }
+
+export * from "./rules";

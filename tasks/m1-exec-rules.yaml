@@ -1,0 +1,45 @@
+id: m1-exec-rules
+title: Exec egress patterns to rule compiler
+goal: >
+  Resolve the SECURITY.md open question for the policy layer owned in
+  M1: compile task-manifest exec egress patterns into a single
+  compiled decision table. One prebuilt matcher per pattern (literal
+  regex metacharacters stay literal), the same allow/ask/deny
+  semantics as decide(), most-specific-wins with deny > ask > allow
+  tie-breaks, and closed-by-default for unmatched subject actions.
+  The exit-gate CLI enforces through the compiler from here on.
+
+acceptance:
+  - compileRules matches decide() exactly across a corpus of actions, subjects and manifests
+  - Regex special characters in patterns and subjects are treated as literals
+  - A subject action with no match and no fallback is denied, never silently allowed
+  - The CLI exec gate uses the compiled rule table
+  - SECURITY.md open question is closed at the compiler layer (sandbox enforcement still M3)
+  - pnpm test and pnpm typecheck are green
+
+allowed_paths:
+  - packages/policy/**
+  - apps/cli/**
+  - SECURITY.md
+  - tasks/**
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test*": allow
+    "pnpm typecheck*": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git checkout*": allow
+    "git diff*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request

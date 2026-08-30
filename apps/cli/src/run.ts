@@ -9,7 +9,7 @@ import {
   type RunReport,
 } from "@harness/sdk";
 import { loadTaskManifestFile, type TaskManifest } from "@harness/sdk";
-import { decide, pathAllowed } from "@harness/policy";
+import { compileRules, pathAllowed } from "@harness/policy";
 import {
   changedPaths,
   currentBranch,
@@ -107,8 +107,9 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
 
   // Log the decision for the exec gate we use (the test command) — the
   // decision is part of the audit trail even though we run it directly.
-  const execDecision = decide(
-    manifest.permissions,
+  // Enforced through the rule compiler: the same compiled decision table
+  // the sandbox-runner will use (see compileRules in @harness/policy).
+  const execDecision = compileRules(manifest.permissions).decide(
     "process.exec",
     args.testCommand ?? DEFAULT_TEST_COMMAND,
   );

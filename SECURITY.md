@@ -30,6 +30,11 @@ subject with pattern, no * ..........: deny   (closed for exec)
   silently becomes `allow`.
 - Manifest `permissions` are the **only** place rules live. The
   sandbox-runner enforces decisions; it adds no private rules of its own.
+- Patterns are enforced through the **rule compiler**
+  (`compileRules()` in `@harness/policy`): one compiled regex per
+  pattern, one decision table per manifest — the CLI and the
+  sandbox-runner enforce the same table, never per-check
+  string rescans.
 
 ## Enforcement layers (defense in depth)
 
@@ -69,7 +74,10 @@ disclose findings.
 
 ## Known open questions (tracked in ROADMAP.md)
 
-- Egress allow-list for sandboxed `process.exec` (M3).
+- ~~Egress allow-list pattern for sandboxed `process.exec` (M3)~~
+  — the pattern → rule **compiler** landed in M1
+  (`compileRules()` in `@harness/policy`); container-level egress
+  enforcement rides on it when the sandbox-runner ships in M3.
 - Replay-safe session restore when an agent dies mid-turn (M4).
 - Redaction pass on `tool.call` payloads (M3, before agent-server
   crosses a process boundary).
