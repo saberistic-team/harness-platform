@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { createEvent, serializeEvent } from "@harness/events";
+import { createEvent, deserializeEvent, serializeEvent } from "@harness/events";
+import { openSqliteSession } from "@harness/sessions";
 import {
   RUN_REPORT_SCHEMA,
   validateRunReport,
@@ -162,8 +163,7 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
     // Gate 4: tests. ("ask" is honored here by the interactive CLI in
     // M1; for headless exit-gate runs, a task that asks is treated as
     // allowed only for its own test command by the grader's prompt.
-    const command = args.testCommand ?? DEFAULT_TEST_COMMAND;
-    const t0 = Date.now();
+    const command = args.testCommand ?? DEFAULT_TEST_COMMAND;    const t0 = Date.now();
     const proc = spawnSync(command, {
       cwd,
       shell: true,
@@ -194,6 +194,45 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
 
   const finishedAt = new Date().toISOString();
 
+  push(
+    createEvent(
+      "run.recorded",
+      {
+        runId: `run-${manifest.id}`,
+        taskId: manifest.id,
+        status: outcome,
+        reportPath,
+      },
+      eventOpts(),
+    ),
+  );
+
+  // Evidence persistence: the run's event stream is the session log.
+  // Stored in the shared per-repo SQLite store (M1 sessions work); the
+  // report links the session id. A persistence failure is recorded as
+  // a typed `error` event in the report rather than hiding the
+  // evidence already produced by the gates above.
+  const dbRelPath = "tasks/runs/sessions.sqlite";
+  const dbPath = join(cwd, dbRelPath);
+  let sessionId: string | undefined;
+  try {
+    const store = openSqliteSession(dbPath, { taskId: manifest.id });
+    for (const wire of events) await store.log.append(deserializeEvent(wire));
+    sessionId = store.sessionId;
+    store.close();
+  } catch (err) {
+    push(
+      createEvent(
+        "error",
+        {
+          code: "SESS_PERSIST_FAILED",
+          message: err instanceof Error ? err.message : String(err),
+        },
+        eventOpts(),
+      ),
+    );
+  }
+
   const report = {
     schema: RUN_REPORT_SCHEMA,
     task: {
@@ -214,26 +253,14 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
     events,
     deliverables: {
       pullRequest: outcome === "passed" ? `branch: ${branch}` : undefined,
-      artifacts: [],
+      artifacts: sessionId ? [dbRelPath] : [],
       reportPath,
+      sessionId,
     },
   } as unknown as RunReport;
 
   const validated = validateRunReport(report);
-  push(
-    createEvent(
-      "run.recorded",
-      {
-        runId: `run-${manifest.id}`,
-        taskId: manifest.id,
-        status: outcome,
-        reportPath,
-      },
-      eventOpts(),
-    ),
-  );
-  // Re-stamp with the final event list.
-  const finalReport = { ...validated, events } as RunReport;
+  const finalReport = validated;
   writeFileSync(
     reportPath,
     `${JSON.stringify(finalReport, null, 2)}\n`,

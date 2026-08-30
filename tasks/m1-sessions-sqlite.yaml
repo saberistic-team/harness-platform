@@ -1,0 +1,46 @@
+id: m1-sessions-sqlite
+title: SQLite persistence for session logs
+goal: >
+  Give session logs a durable store backed by Node's built-in
+  node:sqlite (no native dependency, offline-friendly): an append-only
+  event log plus a session record table. Every frame is validated
+  against the wire schema on both write and read, with typed errors and
+  no silent fallback. The exit-gate CLI persists each run's event
+  stream to tasks/runs/sessions.sqlite, and the run report links the
+  stored session id and the database artifact.
+
+acceptance:
+  - Events appended to a SQLite log round-trip byte-identical through the wire schema
+  - Corrupted frames (bad version, unknown type, broken JSON) raise typed event errors on read
+  - 'harness run persists the run''s full event stream to tasks/runs/sessions.sqlite'
+  - Run report deliverables carry the persisted sessionId and the db artifact
+  - pnpm test and pnpm typecheck are green
+
+allowed_paths:
+  - packages/sessions/**
+  - packages/sdk/**
+  - apps/cli/**
+  - tasks/**
+  - pnpm-lock.yaml
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test*": allow
+    "pnpm typecheck*": allow
+    "pnpm install*": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git checkout*": allow
+    "git diff*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request

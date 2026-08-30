@@ -10,6 +10,7 @@
     "@harness/events": "workspace:*",
     "@harness/policy": "workspace:*",
     "@harness/sdk": "workspace:*",
+    "@harness/sessions": "workspace:*",
     "yaml": "^2.6.0"
   },
   "devDependencies": {

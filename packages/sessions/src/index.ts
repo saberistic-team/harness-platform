@@ -53,6 +53,8 @@ export interface SessionHandle {
   log: EventLog;
 }
 
+export * from "./sqlite";
+
 export function openSession(
   opts: { taskId?: string; createdAt?: string } = {},
 ): SessionHandle {

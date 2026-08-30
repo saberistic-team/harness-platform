@@ -51,6 +51,8 @@ export const runReportSchema = z.object({
     pullRequest: z.string().optional(),
     artifacts: z.array(z.string()).default([]),
     reportPath: identifier,
+    /** Id of the session whose event stream is the run's evidence. */
+    sessionId: identifier.optional(),
   }),
 });
 

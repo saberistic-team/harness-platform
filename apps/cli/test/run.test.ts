@@ -94,6 +94,11 @@ describe("harness run (exit gate)", () => {
       expect(res.report.policy.changedPathsOk).toBe(true);
       expect(res.report.tests?.ok).toBe(true);
       expect(res.report.tests?.passed).toBe(3);
+      // The run's event stream is persisted as a session log:
+      expect(res.report.deliverables.sessionId).toBeTruthy();
+      expect(res.report.deliverables.artifacts).toContain(
+        "tasks/runs/sessions.sqlite",
+      );
       const onDisk = JSON.parse(readFileSync(res.reportPath, "utf8"));
       expect(onDisk.schema).toBe("run-report/v1");
       expect(onDisk.events.length).toBeGreaterThanOrEqual(1);
