@@ -109,6 +109,62 @@ describe("harness run (exit gate)", () => {
     }
   });
 
+  it("records the CI-provided pull-request URL as the delivery link", async () => {
+    const dir = makeRepo({ "packages/events/README.md": "x" });
+    try {
+      writeFileSync(join(dir, "tasks.yaml"), MANIFEST);
+      const pr = "https://github.com/saberistic-team/harness-platform/pull/42";
+      const res = await runTask({
+        cwd: dir,
+        manifestPath: "tasks.yaml",
+        testCommand: 'node -e "console.log(\'Tests 1 passed (1)\')"',
+        prUrl: pr,
+      });
+      expect(res.exitCode).toBe(0);
+      expect(res.report.deliverables.pullRequest).toBe(pr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+
+    // A failed run carries the URL too (evidence belongs where it happened)
+    // — fresh repo: the first run's report artifacts would otherwise be
+    // (correctly!) flagged by the policy gate.
+    const dir2 = makeRepo({ "packages/events/README.md": "x" });
+    try {
+      writeFileSync(join(dir2, "tasks.yaml"), MANIFEST);
+      const pr = "https://github.com/saberistic-team/harness-platform/pull/43";
+      const failed = await runTask({
+        cwd: dir2,
+        manifestPath: "tasks.yaml",
+        testCommand: 'node -e "process.exit(1)"',
+        prUrl: pr,
+      });
+      expect(failed.report.status).toBe("failed");
+      expect(failed.report.deliverables.pullRequest).toBe(pr);
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  it("works on a detached-HEAD checkout when a branch is pinned (CI)", async () => {
+    const dir = makeRepo({ "packages/events/README.md": "x" });
+    try {
+      writeFileSync(join(dir, "tasks.yaml"), MANIFEST);
+      // Simulate a CI detached-HEAD checkout (actions/checkout on a PR).
+      execFileSync("git", ["checkout", "--detach"], { cwd: dir, stdio: "ignore" });
+      const res = await runTask({
+        cwd: dir,
+        manifestPath: "tasks.yaml",
+        testCommand: 'node -e "console.log(\'Tests 1 passed (1)\')"',
+        branch: "tasks/kernel-0001",
+      });
+      expect(res.exitCode).toBe(0);
+      expect(res.report.branch).toBe("tasks/kernel-0001");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("marks the run failed when tests fail", async () => {
     const dir = makeRepo();
     try {

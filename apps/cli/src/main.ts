@@ -17,9 +17,11 @@ Usage:
   harness help                            show this help
 
 Run options:
-  --branch <name>      task branch to work on (default: tasks/<id>)
+  --branch <name>      branch to record on the report (default: tasks/<id>)
   --test-cmd <cmd>     test command override (default: "pnpm test")
   --timeout-ms <n>     test command timeout (default: 300000)
+  --pr-url <url>       pull-request URL to record as the delivery link
+                       (default: $HARNESS_PULL_REQUEST_URL when set)
 `;
 
 function fail(message: string): never {
@@ -60,11 +62,13 @@ export async function runCli(
     let branch: string | undefined;
     let testCommand: string | undefined;
     let timeoutMs: number | undefined;
+    let prUrl: string | undefined;
     for (let i = 1; i < rest.length; i++) {
       const flag = rest[i];
       if (flag === "--branch") branch = rest[++i];
       else if (flag === "--test-cmd") testCommand = rest[++i];
       else if (flag === "--timeout-ms") timeoutMs = Number(rest[++i]);
+      else if (flag === "--pr-url") prUrl = rest[++i];
       else return fail(`unknown option for run: ${flag}`);
     }
     let outcome;
@@ -75,6 +79,7 @@ export async function runCli(
         branch,
         testCommand,
         testTimeoutMs: timeoutMs,
+        prUrl,
       });
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err));

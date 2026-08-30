@@ -1,0 +1,77 @@
+# The required gate on every PR (ROADMAP M1): the three commands that
+# constitute dogfooding — the platform testing itself.
+#
+#   pnpm test
+#   pnpm typecheck
+#   harness run tasks/kernel-0001.yaml
+#
+# Mark this workflow's `gate` job as REQUIRED (branch protection) so
+# no PR merges without it. CI also provides the delivery link
+# (deliverables.pullRequest in the run report) via
+# HARNESS_PULL_REQUEST_URL — the CLI records it verbatim, it never
+# fabricates a URL.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: exit gate — test + typecheck + harness run
+    runs-on: ubuntu-latest
+    env:
+      # On pull_request events this is the real PR URL; on push it
+      # stays empty and the report records the delivery branch.
+      HARNESS_PULL_REQUEST_URL: ${{
+        (github.event_name == 'pull_request'
+        && format('https://github.com/{0}/pull/{1}', github.repository, github.event.pull_request.number))
+        || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm (pinned)
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install (frozen lockfile — supply-chain gate)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (strict across the workspace)
+        run: pnpm typecheck
+
+      - name: Test (offline by design)
+        run: pnpm test
+
+      - name: Golden-kernel scenarios (evals run the kernel)
+        run: pnpm evals
+
+      - name: Exit gate — tasks/kernel-0001.yaml
+        run: pnpm harness run tasks/kernel-0001.yaml --branch "${{ github.head_ref }}"
+        # CI provides the PR URL via HARNESS_PULL_REQUEST_URL above;
+        # it lands in deliverables.pullRequest of the report.
+
+      - name: Evidence — upload run reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-evidence-${{ github.run_id }}
+          path: tasks/runs/
+          if-no-files-found: ignore

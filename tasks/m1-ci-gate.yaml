@@ -1,0 +1,45 @@
+id: m1-ci-gate
+title: CI required gate + PR delivery link
+goal: >
+  Make the platform gate its own pull requests (ROADMAP M1, "dogfooding
+  begins here"): a required workflow job that runs pnpm test, pnpm
+  typecheck, and the exit gate over the first dogfooded task manifest
+  (tasks/kernel-0001.yaml), plus the golden-kernel scenarios. CI also
+  provides the delivery link: the run report now records
+  deliverables.pullRequest from HARNESS_PULL_REQUEST_URL (or --pr-url)
+  when CI supplies it, and never fabricates a URL — otherwise a passing
+  run records its delivery branch.
+
+acceptance:
+  - A workflow runs test + typecheck + harness run tasks/kernel-0001.yaml
+    and the eval scenarios, and is designed to be branch-protected
+  - A CI-provided PR URL is recorded verbatim in deliverables.pullRequest
+  - Without a PR URL a passing run records the delivery branch instead
+  - The gate works in a headless detached-HEAD checkout without erroring
+  - pnpm test and pnpm typecheck are green
+
+allowed_paths:
+  - .github/**
+  - apps/cli/**
+  - tasks/**
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test*": allow
+    "pnpm typecheck*": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git checkout*": allow
+    "git diff*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request

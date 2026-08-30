@@ -23,6 +23,8 @@ export interface RunArgs {
   branch?: string;
   testCommand?: string;
   testTimeoutMs?: number;
+  /** Pull-Request URL to record as the delivery link (CI provides it). */
+  prUrl?: string;
 }
 
 export interface RunOutcome {
@@ -87,11 +89,18 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
     manifestFile,
   );
 
-  // Gate 2: branch.
-  const baseBranch = currentBranch(cwd);
-  const branch =
-    args.branch ?? (isMainish(baseBranch) ? `tasks/${manifest.id}` : baseBranch);
-  ensureBranch(cwd, branch);
+  // Gate 2: branch. When an explicit branch is pinned (CI: the PR's
+  // head ref; the CI checkout is already that ref and the repo may be
+  // detached HEAD), it is recorded as-is. Locally, mainish branches
+  // isolate the work on tasks/<id>.
+  let branch: string;
+  if (args.branch) {
+    branch = args.branch;
+  } else {
+    const baseBranch = currentBranch(cwd);
+    branch = isMainish(baseBranch) ? `tasks/${manifest.id}` : baseBranch;
+    ensureBranch(cwd, branch);
+  }
 
   // Gate 3: policy — changed paths must stay inside allowed_paths.
   // The manifest file itself is the task's contract (input, not output)
@@ -234,6 +243,12 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
     );
   }
 
+  // Delivery link: CI provides the PR URL explicitly (--pr-url) or via
+  // HARNESS_PULL_REQUEST_URL. Without one, a passing run records its
+  // delivery branch — never a fabricated URL.
+  const prUrl = (args.prUrl ?? process.env.HARNESS_PULL_REQUEST_URL ?? "").trim();
+  const effectivePrUrl = prUrl.length > 0 ? prUrl : undefined;
+
   const report = {
     schema: RUN_REPORT_SCHEMA,
     task: {
@@ -253,7 +268,7 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
     tests,
     events,
     deliverables: {
-      pullRequest: outcome === "passed" ? `branch: ${branch}` : undefined,
+      pullRequest: effectivePrUrl ?? (outcome === "passed" ? `branch: ${branch}` : undefined),
       artifacts: sessionId ? [dbRelPath] : [],
       reportPath,
       sessionId,
