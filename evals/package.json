@@ -1,0 +1,23 @@
+{
+  "name": "@harness/evals",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./runner/index.ts",
+    "./scenario": "./runner/scenario.ts",
+    "./execute": "./runner/execute.ts"
+  },
+  "dependencies": {
+    "@harness/events": "workspace:*",
+    "@harness/kernel": "workspace:*",
+    "@harness/models": "workspace:*",
+    "@harness/sdk": "workspace:*",
+    "yaml": "^2.6.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0"
+  }
+}

@@ -47,6 +47,34 @@ importers:
 
   apps/web: {}
 
+  evals:
+    dependencies:
+      '@harness/events':
+        specifier: workspace:*
+        version: link:../packages/events
+      '@harness/kernel':
+        specifier: workspace:*
+        version: link:../packages/kernel
+      '@harness/models':
+        specifier: workspace:*
+        version: link:../packages/models
+      '@harness/sdk':
+        specifier: workspace:*
+        version: link:../packages/sdk
+      yaml:
+        specifier: ^2.6.0
+        version: 2.9.0
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.12
+
   packages/acp: {}
 
   packages/events:

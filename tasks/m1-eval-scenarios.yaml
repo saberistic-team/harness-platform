@@ -1,0 +1,52 @@
+id: m1-eval-scenarios
+title: Eval scenarios runner + first golden-kernel scenario
+goal: >
+  Stand up the M1 eval loop: a scenario DSL (task manifest plus
+  observable invariants over the event stream), an offline
+  deterministic runner that drives the golden kernel (packages/kernel
+  + FakeModel) over the first dogfooded task, and the first scenario
+  — kernel-0001-golden — asserting the well-formed completed event
+  stream. Invariants match the documented dot-path shape
+  (data.<path>: value) and only ever assert on observable events and,
+  when supplied, the exit-gate run report — never kernel internals.
+
+acceptance:
+  - The scenario DSL parses and rejects malformed invariants (unknown
+    event types, non data.* keys) with typed errors
+  - The golden kernel run for kernel-0001 satisfies kernel-0001-golden
+  - A deliberately wrong invariant makes the runner fail with a precise
+    reason, offline
+  - expect.report.status is checked against a supplied run report
+  - pnpm test and pnpm typecheck are green; pnpm evals exits 0
+
+allowed_paths:
+  - evals/**
+  - tsconfig.json
+  - vitest.config.ts
+  - pnpm-workspace.yaml
+  - package.json
+  - pnpm-lock.yaml
+  - tasks/**
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test*": allow
+    "pnpm typecheck*": allow
+    "pnpm evals*": allow
+    "pnpm install*": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git checkout*": allow
+    "git diff*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request

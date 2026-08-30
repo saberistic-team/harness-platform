@@ -20,7 +20,7 @@
     "apps/*/src/**/*.ts",
     "apps/*/test/**/*.ts",
     "services/*/src/**/*.ts",
-    "evals/scenarios/**/*.ts",
+    "evals/**/*.ts",
     "vitest.config.ts"
   ]
 }

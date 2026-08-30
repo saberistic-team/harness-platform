@@ -3,7 +3,8 @@
 Scenario files are the eval system's test cases: a task manifest plus
 the observable invariants a correct run must produce.
 
-Shape (YAML, validated in M2 by `@harness/sdk`):
+Shape (YAML; the M1 runner implements this subset — the canonical
+DSL validation lands in `@harness/sdk` in M2):
 
 ```yaml
 id: scenario-event-roundtrip

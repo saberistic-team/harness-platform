@@ -2,6 +2,7 @@ packages:
   - "apps/*"
   - "services/*"
   - "packages/*"
+  - "evals"
 
 # Build-script approvals (pnpm 11). Keep this list minimal and
 # intentional (see SECURITY.md).

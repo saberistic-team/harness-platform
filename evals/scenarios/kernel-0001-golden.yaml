@@ -1,0 +1,27 @@
+# Golden-kernel scenario #1 (M1): the kernel loop, driven by the
+# deterministic FakeModel over the first dogfooded task manifest, must
+# produce a well-formed, complete event stream.
+id: kernel-0001-golden
+uses_tasks:
+  - kernel-0001
+script:
+  - content: "Serialization of every kernel event is implemented and round-trips cleanly."
+expect:
+  run:
+    status: completed
+    steps: 1
+    toolCalls: 0
+    textContains: round-trips
+    emittedBudgetWarning: false
+  events:
+    - type: session.created
+    - type: agent.started
+      data.taskId: kernel-0001
+      data.model: fake-model/v1
+    - type: model.request
+    - type: model.response
+      data.finishReason: stop
+    - type: agent.stopped
+      data.status: completed
+      data.steps: 1
+      data.toolCalls: 0
