@@ -13,14 +13,20 @@
 - `skills/platform-builder` — operational skill
 - Infra: Docker dev image + compose (MinIO). No Kubernetes.
 
-## M1 — Operator loop  ⏳
+## M1 — Operator loop  ✅ (branch chain `tasks/m1-*`)
 - CI: `pnpm test` + `pnpm typecheck` + `harness run tasks/kernel-0001.yaml`
   as a required gate on every PR (dogfooding begins here)
+  → `tasks/m1-ci-gate`, workflow in `.github/workflows/ci.yaml`
 - `apps/tui`: read-only session/event viewer
+  → `tasks/m1-tui-viewer` (`harness-view list|show|report`)
 - `evals/scenarios` runner + first scenario against the golden kernel
+  → `tasks/m1-eval-scenarios` (`pnpm evals`, scenario `kernel-0001-golden`)
 - SQLite persistence for session logs (`packages/sessions`)
-- Run report: add `deliverables.pull_request` URL when CI provides it
+  → `tasks/m1-sessions-sqlite` (node:sqlite, no new native deps)
+- Run report: `deliverables.pullRequest` URL when CI provides it
+  → `tasks/m1-ci-gate` (`HARNESS_PULL_REQUEST_URL` / `--pr-url`)
 - `SECURITY.md` open question: exec egress pattern → rule compiler
+  → `tasks/m1-exec-rules` (`compileRules()` in `@harness/policy`)
 
 ## M2 — Eval credibility
 - `evals/golden-repositories/hello-service` — first calibration target

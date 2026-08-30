@@ -19,16 +19,17 @@ packages/kernel      Agent loop: goal + model + tools + budget → events
 packages/models      Model protocol + FakeModel (offline default)
 packages/tools       Tool interface + registry
 packages/policy      Pure policy engine (decides, never acts)
-packages/sessions    Append-only session/event logs (in-memory M0)
+packages/sessions    Append-only session/event logs (SQLite, node:sqlite)
 packages/workspace   Path scoping (escape-safe resolution)
 packages/mcp         MCP wire-shape types (client in M2)
 packages/acp         Agent Client Protocol types (server in M3)
 packages/sdk         Task manifest (input contract) + run report (output contract)
 apps/cli             Exit-gate CLI:  harness validate | harness run
-apps/tui, apps/web   UI clients (ACP consumers; M3/M2)
+apps/tui             Read-only session/event viewer (harness-view; M1)
+apps/web             UI client (task board; M2)
 services/*           control-plane, agent-server, sandbox-runner (M3+)
 tasks/               Task manifests (one per dogfooded task) + reports
-evals/               Golden repos + scenarios (eval system input)
+evals/               Scenario runner + golden-kernel scenarios (M1)
 infra/               Docker now, Kubernetes in M4
 skills/              Agent skills for operating this platform
 ```
