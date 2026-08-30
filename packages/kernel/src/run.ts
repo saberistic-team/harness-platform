@@ -101,6 +101,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   let warnedTokens = false;
   let warnedCalls = false;
   let finalText = "";
+  let done = false;
 
   const messages: ChatMessage[] = [{ role: "user", content: opts.goal }];
 
@@ -195,6 +196,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
     if (response.toolCalls.length === 0) {
       finalText = response.content;
       stop("completed");
+      done = true;
       break;
     }
 
@@ -281,7 +283,9 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   }
 
   // Step budget exhausted: the model never produced a final answer.
-  stop("failed", `max_steps=${maxSteps} reached without a final answer`);
+  if (!done) {
+    stop("failed", `max_steps=${maxSteps} reached without a final answer`);
+  }
 
   return {
     text: finalText,

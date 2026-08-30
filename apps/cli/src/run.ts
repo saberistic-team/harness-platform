@@ -8,7 +8,7 @@ import {
   type RunReport,
 } from "@harness/sdk";
 import { loadTaskManifestFile, type TaskManifest } from "@harness/sdk";
-import { checkChangedPaths, decide } from "@harness/policy";
+import { decide, pathAllowed } from "@harness/policy";
 import {
   changedPaths,
   currentBranch,
@@ -91,11 +91,16 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
   ensureBranch(cwd, branch);
 
   // Gate 3: policy — changed paths must stay inside allowed_paths.
+  // The manifest file itself is the task's contract (input, not output)
+  // and is exempt from the allow-list.
   const changed = changedPaths(cwd);
-  const policyCheck = checkChangedPaths(
-    manifest.allowed_paths,
-    changed,
+  const relManifest = manifestFile.startsWith(cwd)
+    ? manifestFile.slice(cwd.length).replace(/^\//, "")
+    : manifestFile;
+  const violations = changed.filter(
+    (p) => p !== relManifest && !pathAllowed(manifest.allowed_paths, p),
   );
+  const policyCheck = { ok: violations.length === 0, violations };
 
   // Log the decision for the exec gate we use (the test command) — the
   // decision is part of the audit trail even though we run it directly.
@@ -106,10 +111,10 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
   );
 
   const events: string[] = [];
-  const stamp = {
-    at: () => new Date().toISOString(),
+  const eventOpts = () => ({
+    at: new Date().toISOString(),
     actor: "harness-cli",
-  };
+  });
   const push = (e: Parameters<typeof serializeEvent>[0]) => {
     events.push(serializeEvent(e));
   };
@@ -122,7 +127,7 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
   let outcome: "passed" | "failed" | "blocked";
   let tests: RunReport["tests"];
 
-  push(createEvent("task.updated", { taskId: manifest.id, phase: "running" }, stamp));
+  push(createEvent("task.updated", { taskId: manifest.id, phase: "running" }, eventOpts()));
 
   if (!policyCheck.ok) {
     outcome = "blocked";
@@ -134,7 +139,7 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
           effect: "deny",
           reason: `changed paths outside allowed_paths: ${policyCheck.violations.join(", ")}`,
         },
-        stamp,
+        eventOpts(),
       ),
     );
   } else if (execDecision.effect === "deny") {
@@ -148,7 +153,7 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
           effect: "deny",
           reason: execDecision.reason,
         },
-        stamp,
+        eventOpts(),
       ),
     );
   } else {
@@ -222,7 +227,7 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
         status: outcome,
         reportPath,
       },
-      stamp,
+      eventOpts(),
     ),
   );
   // Re-stamp with the final event list.

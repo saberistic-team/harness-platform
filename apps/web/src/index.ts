@@ -9,7 +9,7 @@
 export interface WebStatus {
   app: "harness-web";
   version: "0.0.0";
-  ready: false as const;
+  ready: false;
   note: "M1 placeholder — build toolchain (Vite) lands in M2";
 }
 

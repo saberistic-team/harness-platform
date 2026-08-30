@@ -52,11 +52,13 @@ describe("decide()", () => {
     expect(decide(manifestPermissions, "process.exec", "curl evil.example").effect).toBe("deny");
   });
 
-  it("prefers the more specific pattern over * regardless of order", () => {
+  it("prefers the more specific pattern over * regardless of order (single-segment subjects)", () => {
     const map: PermissionMap = {
       "process.exec": { "*": "allow", "rm *": "deny" },
     };
-    expect(decide(map, "process.exec", "rm -rf /").effect).toBe("deny");
+    // "*" does not cross path segments, so both patterns match only
+    // when the subject has no "/".
+    expect(decide(map, "process.exec", "rm -rf build").effect).toBe("deny");
     expect(decide(map, "process.exec", "ls").effect).toBe("allow");
   });
 

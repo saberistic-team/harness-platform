@@ -181,6 +181,9 @@ export type EventType = keyof typeof eventSchemas;
 
 export type TypedEvent<T extends EventType> = z.infer<(typeof eventSchemas)[T]>;
 
+/** Payload type for a given event type. */
+export type EventData<T extends EventType> = TypedEvent<T>["data"];
+
 export type AnyHarnessEvent = {
   [K in EventType]: TypedEvent<K>
 }[EventType];

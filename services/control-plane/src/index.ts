@@ -14,7 +14,7 @@
 export interface ControlPlaneStatus {
   service: "control-plane";
   version: "0.0.0";
-  ready: false as const;
+  ready: false;
 }
 
 export function status(): ControlPlaneStatus {

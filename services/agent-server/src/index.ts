@@ -11,7 +11,7 @@
 export interface AgentServerStatus {
   service: "agent-server";
   version: "0.0.0";
-  ready: false as const;
+  ready: false;
 }
 
 export function status(): AgentServerStatus {

@@ -1,5 +1,6 @@
 import { cwd as processCwd } from "node:process";
 import { pathToFileURL } from "node:url";
+import { resolve } from "node:path";
 import { loadTaskManifestFile } from "@harness/sdk";
 import { runTask } from "./run";
 
@@ -31,7 +32,7 @@ export async function runCli(
   opts: CliOptions = {},
 ): Promise<number> {
   const out = opts.out ?? ((line: string) => console.log(line));
-  const cwd = processCwd(opts.cwd);
+  const cwd = opts.cwd ?? processCwd();
   const [cmd, ...rest] = argv;
 
   if (cmd === "help" || cmd === "--help" || cmd === "-h" || cmd === undefined) {
@@ -41,7 +42,7 @@ export async function runCli(
 
   if (cmd === "validate" && rest[0]) {
     try {
-      const manifest = await loadTaskManifestFile(rest[0]);
+      const manifest = await loadTaskManifestFile(resolve(cwd, rest[0]));
       out(`valid task manifest: ${manifest.id} "${manifest.title}"`);
       out(JSON.stringify(manifest, null, 2));
       return 0;

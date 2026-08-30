@@ -5,6 +5,7 @@ import {
   eventSchemas,
   isEventType,
   type AnyHarnessEvent,
+  type EventData,
   type EventType,
   type TypedEvent,
 } from "./schemas";
@@ -29,7 +30,7 @@ export interface CreateEventOptions {
  */
 export function createEvent<T extends EventType>(
   type: T,
-  data: Omit<TypedEvent<T>, "v" | "type" | "eventId" | "at" | "actor">["data"],
+  data: EventData<T>,
   opts: CreateEventOptions = {},
 ): TypedEvent<T> {
   const out: Record<string, unknown> = {

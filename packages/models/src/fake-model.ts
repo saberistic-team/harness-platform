@@ -6,8 +6,6 @@ import {
   type ToolCall,
   type Usage,
   estimateTokens,
-  emptyUsage,
-  addUsage,
 } from "./model";
 
 /**
@@ -47,7 +45,7 @@ export class FakeModel implements Model {
   }
 
   /** Queue further turns to be replayed in order. */
-  queue(...turns: ScriptedTurn[]): this {
+  enqueue(...turns: ScriptedTurn[]): this {
     this.queue.push(...turns);
     return this;
   }
@@ -60,6 +58,7 @@ export class FakeModel implements Model {
     this.requests.push(request);
     const seq = this.requests.length;
     const turn = this.queue.shift() ?? { content: `[fake-model] ack #${seq}` };
+    let usage: Usage;
 
     const prompt =
       (request.system ? request.system + "\n" : "") +
@@ -68,12 +67,18 @@ export class FakeModel implements Model {
       turn.content ?? "",
       ...(turn.toolCalls ?? []).map((tc) => JSON.stringify(tc.arguments ?? {})),
     ].join("\n");
-    const usage =
-      turn.usage ??
-      addUsage(
-        { ...emptyUsage(), promptTokens: estimateTokens(prompt) },
-        { ...emptyUsage(), completionTokens: estimateTokens(scriptedCompletion) },
-      );
+    if (turn.usage) {
+      const u = turn.usage;
+      usage = {
+        promptTokens: u.promptTokens,
+        completionTokens: u.completionTokens,
+        totalTokens: u.totalTokens || u.promptTokens + u.completionTokens,
+      };
+    } else {
+      const P = estimateTokens(prompt);
+      const C = estimateTokens(scriptedCompletion);
+      usage = { promptTokens: P, completionTokens: C, totalTokens: P + C };
+    }
 
     return {
       id: `fake-${seq}`,

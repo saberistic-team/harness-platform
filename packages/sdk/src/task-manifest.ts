@@ -25,7 +25,7 @@ const effect = z.enum(["allow", "ask", "deny"]);
 
 const permissionValue = z.union([
   effect,
-  z.record(effect).passthrough(),
+  z.record(effect),
 ]);
 
 export const taskManifestSchema = z

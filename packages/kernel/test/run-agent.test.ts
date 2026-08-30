@@ -4,6 +4,7 @@ import { ToolRegistry, createEchoTool } from "@harness/tools";
 import { runAgent, BudgetExceededError } from "../src";
 
 const FIXED_AT = "2026-01-02T03:04:05.000Z";
+let idCounter = 0;
 const base = {
   goal: "do the thing",
   tools: new ToolRegistry([createEchoTool("echo", "echoed")]),
@@ -89,8 +90,10 @@ describe("runAgent", () => {
   it("enforces the token budget: warns at 50%, hard-stops over limit", async () => {
     const usage = { promptTokens: 10, completionTokens: 0, totalTokens: 10 };
     const model = new FakeModel([
-      { content: "a", usage: { ...usage } },
-      { content: "b", usage: { ...usage } },
+      // Turn 1: a tool-call turn (so the loop continues), 10/15 = 66% → warning.
+      { content: "", toolCalls: [{ id: "c1", name: "echo", arguments: {} }], usage: { ...usage } },
+      // Turn 2: another 10 tokens → 20 > 15 → budget exceeded.
+      { content: "", toolCalls: [{ id: "c2", name: "echo", arguments: {} }], usage: { ...usage } },
       { content: "c", usage: { ...usage } },
     ]);
 

@@ -9,7 +9,7 @@
 export interface TuiStatus {
   app: "harness-tui";
   version: "0.0.0";
-  ready: false as const;
+  ready: false;
   note: "M1 placeholder — ACP client lands in M3";
 }
 

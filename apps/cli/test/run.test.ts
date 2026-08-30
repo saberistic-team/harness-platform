@@ -25,6 +25,11 @@ function makeRepo(files: Record<string, string> = {}): string {
     writeFileSync(full, content);
   }
   git(["add", "-A"]);
+  if (Object.keys(files).length === 0) {
+    mkdirSync(join(dir, "packages"), { recursive: true });
+    writeFileSync(join(dir, "packages/seed.md"), "harness-test-repo\n");
+    git(["add", "-A"]);
+  }
   git(["commit", "-q", "-m", "initial"]);
   return dir;
 }
@@ -124,6 +129,7 @@ describe("harness run (exit gate)", () => {
         manifest("kernel-0002", ["packages/**"], ['node -e *']),
       );
       // A change outside the allowed set:
+      mkdirSync(join(dir, "infra/docker"), { recursive: true });
       writeFileSync(join(dir, "infra/docker/rogue.Dockerfile"), "FROM scratch\n");
       const res = await runTask({
         cwd: dir,

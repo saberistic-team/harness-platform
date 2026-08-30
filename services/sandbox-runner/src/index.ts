@@ -17,7 +17,7 @@
 export interface SandboxRunnerStatus {
   service: "sandbox-runner";
   version: "0.0.0";
-  ready: false as const;
+  ready: false;
 }
 
 export function status(): SandboxRunnerStatus {
