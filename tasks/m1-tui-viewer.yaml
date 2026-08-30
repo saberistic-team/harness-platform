@@ -1,0 +1,49 @@
+id: m1-tui-viewer
+title: Read-only session/event viewer (apps/tui)
+goal: >
+  Give the operator a window into what the platform did: apps/tui
+  becomes a read-only viewer over the SQLite session store and run
+  reports. It lists sessions, renders a session's event stream (typed,
+  ordered, colorized by outcome), and renders a run report with its
+  event evidence. No mutation, no execution, no writes — interactive
+  driving and permission ask flows arrive with the ACP server in M3.
+  Rendering is a pure, golden-diffable layer; IO is thin.
+
+acceptance:
+  - harness-view list shows stored sessions with task, status, and
+    event counts
+  - harness-view show renders an event stream in order with stable
+    columns; --from/--limit/--raw honored
+  - harness-view report renders run metadata, deliverables (PR url,
+    session), and the decoded event stream
+  - Missing store / unreadable or invalid report exit non-zero with
+    typed messages (never a silent fallback)
+  - Rendering is pure and deterministic (color on/off)
+  - pnpm test and pnpm typecheck are green
+
+allowed_paths:
+  - apps/tui/**
+  - pnpm-lock.yaml
+  - tasks/**
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test*": allow
+    "pnpm typecheck*": allow
+    "pnpm install*": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git checkout*": allow
+    "git diff*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request

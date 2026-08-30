@@ -43,7 +43,24 @@ importers:
         specifier: ^4.19.0
         version: 4.23.12
 
-  apps/tui: {}
+  apps/tui:
+    dependencies:
+      '@harness/events':
+        specifier: workspace:*
+        version: link:../../packages/events
+      '@harness/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      '@harness/sessions':
+        specifier: workspace:*
+        version: link:../../packages/sessions
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.12
 
   apps/web: {}
 
