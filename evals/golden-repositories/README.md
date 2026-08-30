@@ -11,6 +11,9 @@ work on. Rules:
 
 ## Status
 
-None yet. First candidate (M2): `hello-service/` — a single-file HTTP
-server with an integration test, used to calibrate task→PR→report
-throughput and event-stream fidelity.
+- `hello-service/` — **landed (M2)**. Single-file HTTP server
+  (`node:http`, zero deps) with a `SPEC.md` contract and an offline
+  integration test (`node --test`). The eval system's first
+  calibration target for task→PR→report throughput and
+  event-stream fidelity.
+  - task: `tasks/m2-golden-hello-service.yaml`

@@ -1,0 +1,14 @@
+{
+  "name": "hello-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Golden-repo calibration target #1 (ROADMAP M2). One-file HTTP service; see SPEC.md.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  }
+}

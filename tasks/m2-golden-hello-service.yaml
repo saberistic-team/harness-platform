@@ -1,0 +1,45 @@
+id: m2-golden-hello-service
+title: "Golden repo #1: hello-service calibration target"
+goal: >
+  Land the first golden repository (ROADMAP M2, "eval credibility"):
+  evals/golden-repositories/hello-service — a single-file, zero-dependency
+  HTTP service (node:http only) with a SPEC.md pinning the observable
+  contract and an offline integration test (ephemeral 127.0.0.1 port,
+  fetch-driven) that exercises the real wire format. It is a
+  calibration target for task→PR→report throughput and event-stream
+  fidelity, per evals/golden-repositories/README.md.
+
+acceptance:
+  - hello-service ships SPEC.md + server.mjs + integration test,
+    all inside evals/golden-repositories/
+  - "node --test in the package directory is 7/7 green offline"
+  - The service builds and tests with Node >= 22 only (no deps,
+    no network at test time)
+  - The golden-repositories README status line is updated
+  - pnpm test and pnpm typecheck stay green
+
+allowed_paths:
+  - evals/golden-repositories/**
+  - tasks/**
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test*": allow
+    "pnpm typecheck*": allow
+    "node --test*": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git checkout*": allow
+    "git diff*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request
