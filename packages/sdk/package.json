@@ -1,0 +1,14 @@
+{
+  "name": "@harness/sdk",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@harness/policy": "workspace:*",
+    "yaml": "^2.6.0",
+    "zod": "^3.24.0"
+  }
+}

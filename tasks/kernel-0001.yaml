@@ -1,0 +1,32 @@
+id: kernel-0001
+title: Add agent event serialization
+
+goal: >
+  Implement JSON serialization and deserialization for all kernel events.
+
+acceptance:
+  - All event variants round-trip without data loss
+  - Unknown event versions return a typed error
+  - Unit and integration tests pass
+
+allowed_paths:
+  - packages/events/**
+  - packages/kernel/**
+  - evals/**
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test*": allow
+    "pnpm lint*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request

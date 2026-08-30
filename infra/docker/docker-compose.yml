@@ -1,0 +1,44 @@
+# Local infra (pre-Kubernetes): Docker only.
+#
+# Phase rule: Docker before Kubernetes (see ARCHITECTURE.md).
+# Kubernetes manifests come in M4 once the control plane exists.
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: harness
+      MINIO_ROOT_PASSWORD: harness-local
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # SQLite stays in-process (file-backed) — it is a service-local store,
+  # not a container service here.
+  app:
+    build:
+      context: ../..
+      dockerfile: infra/docker/dev.Dockerfile
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      HARNESS_ARTIFACT_ENDPOINT: http://minio:9000
+      HARNESS_ARTIFACT_BUCKET: harness
+    volumes:
+      - ../..:/workspace
+      - sqlite-data:/workspace/data
+    entrypoint: sh
+    command: ["-c", "pnpm install --frozen-lockfile && pnpm test && pnpm typecheck"]
+
+volumes:
+  minio-data:
+  sqlite-data:

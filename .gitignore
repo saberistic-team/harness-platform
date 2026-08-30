@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.DS_Store
+*.log
+
+# Run reports are generated artifacts (the exit gate produces them).
+tasks/runs/*.json
+tasks/runs/*.jsonl
+
+# Local databases and artifacts
+*.sqlite
+*.sqlite3
+data/
+artifacts/

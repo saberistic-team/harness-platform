@@ -1,0 +1,12 @@
+{
+  "name": "@harness/sessions",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@harness/events": "workspace:*"
+  }
+}

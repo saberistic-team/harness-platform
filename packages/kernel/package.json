@@ -1,0 +1,15 @@
+{
+  "name": "@harness/kernel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@harness/events": "workspace:*",
+    "@harness/models": "workspace:*",
+    "@harness/tools": "workspace:*",
+    "zod": "^3.24.0"
+  }
+}
