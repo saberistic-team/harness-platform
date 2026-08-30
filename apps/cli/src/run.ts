@@ -50,13 +50,15 @@ function parseTestSummary(output: string): {
     passed = Number(jest[2]);
     total = Number(jest[3]);
   } else {
-    const p = output.match(/(\d+)\s+passed/i);
-    const f = output.match(/(\d+)\s+failed/i);
-    if (p) passed = Number(p[1]);
+    // Prefer runner lines like vitest's "Tests  40 passed (40)" /
+    // "Tests  1 failed | 39 passed (40)" over "Test Files ..." lines.
+    const f = output.match(/Tests\s+(\d+)\s+failed/i);
+    const p = output.match(/Tests\s+(\d+)\s+passed/i);
     if (f) failed = Number(f[1]);
-    if (passed !== undefined && failed !== undefined) {
-      total = passed + failed;
-    }
+    if (p) passed = Number(p[1]);
+    if (passed !== undefined && failed !== undefined) total = passed + failed;
+    else if (passed !== undefined) total = passed;
+    else if (failed !== undefined) total = failed;
   }
   return { total, passed, failed };
 }
