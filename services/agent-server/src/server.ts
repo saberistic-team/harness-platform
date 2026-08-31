@@ -1,6 +1,8 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { timingSafeEqual } from "node:crypto";
+import { access } from "node:fs/promises";
+import { resolve } from "node:path";
 import {
   AgentConnection,
   validateAgentAdvertisement,
@@ -23,6 +25,8 @@ export interface AgentServerOptions extends AgentConnectionOptions {
   allowPlaintextRemote?: boolean;
   /** Browser origins are denied by default, including on loopback. */
   allowedOrigins?: readonly string[];
+  /** Deployment-owned path that must exist before readiness succeeds. */
+  readinessPath?: string;
 }
 
 export interface RunningAgentServer {
@@ -49,10 +53,68 @@ export async function startAgentServer(options: AgentServerOptions): Promise<Run
     );
   }
   const connections = new Map<AgentConnection, WebSocketConnection>();
+  const draining = new Set<Promise<void>>();
+  const drainStarted = new WeakSet<AgentConnection>();
+  const activeSessionIds = new Set<string>();
+  const beginDrain = (connection: AgentConnection): void => {
+    if (drainStarted.has(connection)) return;
+    drainStarted.add(connection);
+    connection.close();
+    let drain!: Promise<void>;
+    drain = connection.waitForIdle()
+      // A disconnected client has no response channel for a close failure.
+      // Keep it tracked for shutdown without creating an unhandled rejection.
+      .catch(() => {})
+      .finally(() => draining.delete(drain));
+    draining.add(drain);
+  };
+  let readinessInFlight: Promise<boolean> | undefined;
+  let readinessCache: { ready: boolean; expiresAt: number } | undefined;
+  const readinessPath = options.readinessPath === undefined
+    ? undefined
+    : resolve(options.workspaceRoot ?? process.cwd(), options.readinessPath);
+  const ready = (): Promise<boolean> => {
+    const now = Date.now();
+    if (readinessCache && readinessCache.expiresAt > now) {
+      return Promise.resolve(readinessCache.ready);
+    }
+    if (readinessInFlight) return readinessInFlight;
+    const check = (async () => {
+      try {
+        if (options.sessionStore) await options.sessionStore.currentTime();
+        if (readinessPath) await access(readinessPath);
+        readinessCache = { ready: true, expiresAt: Date.now() + 1_000 };
+        return true;
+      } catch {
+        readinessCache = { ready: false, expiresAt: Date.now() + 1_000 };
+        return false;
+      }
+    })();
+    readinessInFlight = check;
+    void check.finally(() => {
+      if (readinessInFlight === check) readinessInFlight = undefined;
+    });
+    return check;
+  };
   const server = createServer((request, response) => {
-    if (request.method === "GET" && request.url === "/health") {
+    if (
+      request.method === "GET" &&
+      (request.url === "/health" || request.url === "/health/live")
+    ) {
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      response.end(JSON.stringify({ service: "agent-server", ready: true }));
+      response.end(JSON.stringify({ service: "agent-server", live: true }));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/health/ready") {
+      void ready().then((isReady) => {
+        response.writeHead(isReady ? 200 : 503, {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store",
+        });
+        response.end(JSON.stringify(isReady
+          ? { service: "agent-server", ready: true }
+          : { error: { code: "AGENT_NOT_READY", message: "agent server is not ready" } }));
+      });
       return;
     }
     response.writeHead(404, { "content-type": "application/json; charset=utf-8" });
@@ -72,12 +134,15 @@ export async function startAgentServer(options: AgentServerOptions): Promise<Run
       return expectedBytes.length === suppliedBytes.length && timingSafeEqual(expectedBytes, suppliedBytes);
     },
     onConnection(socket) {
-      const connection = new AgentConnection((wire) => socket.sendText(wire), options);
+      const connection = new AgentConnection(
+        (wire) => socket.sendText(wire),
+        { ...options, activeSessionIds },
+      );
       connections.set(connection, socket);
       socket.onMessage((wire) => connection.receive(wire));
       socket.onClose(() => {
-        connection.close();
         connections.delete(connection);
+        beginDrain(connection);
       });
     },
   });
@@ -100,7 +165,7 @@ export async function startAgentServer(options: AgentServerOptions): Promise<Run
   let closePromise: Promise<void> | undefined;
   return {
     httpServer: server,
-    url: `ws://${host}:${address.port}${path}`,
+    url: `ws://${host.includes(":") ? `[${host}]` : host}:${address.port}${path}`,
     host,
     port: address.port,
     close() {
@@ -109,14 +174,12 @@ export async function startAgentServer(options: AgentServerOptions): Promise<Run
         const httpClosed = new Promise<void>((resolveClose, rejectClose) => {
           server.close((error) => error ? rejectClose(error) : resolveClose());
         });
-        const draining = [...connections];
-        for (const [connection, socket] of draining) {
-          connection.close();
+        const connectionSnapshot = [...connections];
+        for (const [connection, socket] of connectionSnapshot) {
+          beginDrain(connection);
           socket.close(1001, "server shutting down");
         }
-        await Promise.allSettled(
-          draining.map(([connection]) => connection.waitForIdle()),
-        );
+        await Promise.allSettled([...draining]);
         connections.clear();
         await httpClosed;
       })();

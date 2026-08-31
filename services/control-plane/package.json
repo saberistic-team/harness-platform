@@ -1,9 +1,27 @@
 {
   "name": "@harness/control-plane",
-  "version": "0.0.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "bin": {
+    "harness-control-plane": "./bin/control-plane.js"
+  },
+  "scripts": {
+    "test": "vitest run --root ../.. services/control-plane/test",
+    "typecheck": "tsc --noEmit -p ../../tsconfig.json"
+  },
+  "dependencies": {
+    "@harness/events": "workspace:*",
+    "@harness/sdk": "workspace:*",
+    "@harness/sessions": "workspace:*",
+    "pg": "^8.23.0",
+    "tsx": "^4.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.23.1"
   }
 }

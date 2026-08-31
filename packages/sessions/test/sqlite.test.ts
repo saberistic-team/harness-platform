@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -14,6 +14,7 @@ import {
   getSessionRecord,
   listSessions,
   openSqliteSession,
+  openSqliteStore,
   SessionStoreError,
   setSessionStatus,
 } from "../src/index";
@@ -96,6 +97,137 @@ describe("SqliteEventLog", () => {
       ]);
     } finally {
       s.close();
+    }
+  });
+
+  it("uses eventId as an idempotency key and rejects conflicting reuse", async () => {
+    const s = makeSession();
+    try {
+      const event = createEvent("task.updated", {
+        taskId: "t",
+        phase: "running",
+      }, {
+        eventId: "evt-idempotent",
+        at: "2026-01-01T00:00:00.000Z",
+      });
+      expect(await s.log.append(event)).toBe(0);
+      expect(await s.log.append(event)).toBe(0);
+      expect(await s.log.size()).toBe(1);
+
+      const conflict = createEvent("task.updated", {
+        taskId: "t",
+        phase: "blocked",
+      }, {
+        eventId: "evt-idempotent",
+        at: "2026-01-01T00:00:00.000Z",
+      });
+      await expect(s.log.append(conflict)).rejects.toMatchObject({
+        code: "SESS_EVENT_CONFLICT",
+      });
+    } finally {
+      s.close();
+    }
+  });
+
+  it("rejects new events after close but accepts a retry of a committed event", async () => {
+    const s = makeSession();
+    const committed = createEvent("session.created", {
+      sessionId: s.sessionId,
+    }, {
+      eventId: "evt-before-close",
+      at: "2026-01-01T00:00:00.000Z",
+    });
+    try {
+      expect(await s.log.append(committed)).toBe(0);
+      setSessionStatus(dbPath, s.sessionId, "closed", "2026-01-01T01:00:00.000Z");
+      expect(await s.log.append(committed)).toBe(0);
+      await expect(s.log.append(createEvent("error", {
+        code: "TOO_LATE",
+        message: "new append",
+      }))).rejects.toMatchObject({ code: "SESS_CLOSED" });
+      expect(await s.log.size()).toBe(1);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("reads canonical sequence pages using a last-seen cursor", async () => {
+    const s = makeSession();
+    try {
+      for (let index = 0; index < 3; index++) {
+        await s.log.append(createEvent("task.updated", {
+          taskId: "t",
+          phase: "running",
+          note: String(index),
+        }, { eventId: `evt-page-${index}` }));
+      }
+      const first = await s.log.read({ afterSeq: -1, limit: 2 });
+      expect(first.events.map((item) => item.seq)).toEqual([0, 1]);
+      expect(first.nextAfterSeq).toBe(1);
+      expect(first.hasMore).toBe(true);
+      const second = await s.log.read({ afterSeq: first.nextAfterSeq, limit: 2 });
+      expect(second.events.map((item) => item.seq)).toEqual([2]);
+      expect(second.hasMore).toBe(false);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("fences owner-bound appends and validates committed retries with the store clock", async () => {
+    let now = "2026-01-01T01:00:00.000Z";
+    const store = openSqliteStore(dbPath, { now: () => now });
+    try {
+      const session = await store.createSession({
+        sessionId: "sess-owned",
+        metadata: {
+          ownerId: "worker-1",
+          leaseExpiresAt: "2026-01-01T02:00:00.000Z",
+        },
+      });
+      const committed = createEvent("task.updated", {
+        taskId: "owned-task",
+        phase: "running",
+      }, { eventId: "evt-owned-sqlite" });
+      const owned = store.eventLog(session.sessionId, { ownerId: "worker-1" });
+      expect(await owned.append(committed)).toBe(0);
+      await expect(store.eventLog(session.sessionId, {
+        ownerId: "worker-2",
+      }).append(createEvent("task.updated", {
+        taskId: "owned-task",
+        phase: "verifying",
+      }, { eventId: "evt-wrong-owner-sqlite" }))).rejects.toMatchObject({
+        code: "SESS_OWNERSHIP_LOST",
+      });
+
+      now = "2026-01-01T03:00:00.000Z";
+      await expect(owned.append(createEvent("task.updated", {
+        taskId: "owned-task",
+        phase: "blocked",
+      }, { eventId: "evt-expired-owner-sqlite" }))).rejects.toMatchObject({
+        code: "SESS_OWNERSHIP_LOST",
+      });
+      await expect(store.setMetadata(session.sessionId, {
+        ownerId: "worker-1",
+        leaseExpiresAt: "2026-01-01T04:00:00.000Z",
+      }, { ownerId: "worker-1" })).rejects.toMatchObject({
+        code: "SESS_OWNERSHIP_LOST",
+      });
+      await expect(store.transitionSession(
+        session.sessionId,
+        "active",
+        "closed",
+        now,
+        { ownerId: "worker-1" },
+      )).rejects.toMatchObject({ code: "SESS_OWNERSHIP_LOST" });
+      await store.transitionSession(session.sessionId, "active", "closed");
+      await expect(owned.append(committed)).rejects.toMatchObject({
+        code: "SESS_OWNERSHIP_LOST",
+      });
+      // Explicitly unowned service logs preserve committed retry semantics.
+      expect(await store.eventLog(session.sessionId).append(committed)).toBe(0);
+      expect(await owned.size()).toBe(1);
+    } finally {
+      store.close();
     }
   });
 
@@ -186,6 +318,133 @@ describe("session records", () => {
     expect(all.map((r) => r.sessionId)).toContain(a.sessionId);
   });
 
+  it("supports metadata and compare-and-swap checkpoints", async () => {
+    const store = openSqliteStore(dbPath);
+    try {
+      const session = await store.createSession({
+        sessionId: "sess-checkpoint",
+        taskId: "kernel-0001",
+        metadata: { worker: "worker-1" },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      expect(session.metadata).toEqual({ worker: "worker-1" });
+      await store.appendEvent(session.sessionId, createEvent("session.created", {
+        sessionId: session.sessionId,
+      }, { eventId: "evt-checkpoint-0" }));
+      const checkpoint = await store.saveCheckpoint(session.sessionId, {
+        expectedRevision: 0,
+        afterSeq: 0,
+        payload: { step: 1, transcript: ["safe-boundary"] },
+        updatedAt: "2026-01-01T00:01:00.000Z",
+      });
+      expect(checkpoint).toMatchObject({ revision: 1, afterSeq: 0 });
+      expect(await store.saveCheckpoint(session.sessionId, {
+        expectedRevision: 0,
+        afterSeq: 0,
+        payload: { step: 1, transcript: ["safe-boundary"] },
+        updatedAt: "2026-01-01T00:02:00.000Z",
+      })).toEqual(checkpoint);
+      await expect(store.saveCheckpoint(session.sessionId, {
+        expectedRevision: 1,
+        afterSeq: -1,
+        payload: { step: 0 },
+      })).rejects.toMatchObject({ code: "SESS_CHECKPOINT_CONFLICT" });
+      expect(await store.getCheckpoint(session.sessionId)).toEqual(checkpoint);
+      await expect(store.saveCheckpoint(session.sessionId, {
+        expectedRevision: 0,
+        afterSeq: 0,
+        payload: {},
+      })).rejects.toMatchObject({ code: "SESS_CHECKPOINT_CONFLICT" });
+      expect((await store.setMetadata(session.sessionId, { worker: "worker-2" })).metadata)
+        .toEqual({ worker: "worker-2" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("atomically records interrupted recovery once and closes the session", async () => {
+    const store = openSqliteStore(dbPath);
+    try {
+      const session = await store.createSession({
+        sessionId: "sess-recover",
+        metadata: { ownerId: "worker-1", leaseExpiresAt: "2026-01-01T00:01:00.000Z" },
+      });
+      await store.appendEvent(session.sessionId, createEvent("session.created", {
+        sessionId: session.sessionId,
+      }, { eventId: "evt-recover-created" }));
+      const restored = createEvent("session.restored", {
+        sessionId: session.sessionId,
+        afterSeq: -1,
+        availableThroughSeq: 0,
+        availableEvents: 1,
+        outcome: "interrupted",
+        note: "worker died mid-turn; turn was not re-executed",
+      }, {
+        eventId: "evt-recover-once",
+        at: "2026-01-01T00:02:00.000Z",
+      });
+      const refreshed = await store.setMetadata(session.sessionId, {
+        ownerId: "worker-1",
+        leaseExpiresAt: "2026-01-01T00:01:30.000Z",
+      });
+      await expect(store.recoverInterrupted(
+        session.sessionId,
+        restored,
+        "2026-01-01T00:02:00.000Z",
+        session.metadata,
+      )).rejects.toMatchObject({ code: "SESS_RECOVERY_CONFLICT" });
+
+      const first = await store.recoverInterrupted(
+        session.sessionId,
+        restored,
+        "2026-01-01T00:02:00.000Z",
+        refreshed.metadata,
+      );
+      expect(first.recovered).toBe(true);
+      expect(first.event?.seq).toBe(1);
+      expect(first.record.status).toBe("closed");
+
+      const retry = await store.recoverInterrupted(session.sessionId, restored);
+      expect(retry.recovered).toBe(false);
+      expect(retry.event?.seq).toBe(1);
+      expect((await store.readSessionEvents(session.sessionId)).events).toHaveLength(2);
+      await expect(store.setMetadata(session.sessionId, {
+        ownerId: "stale-worker",
+      })).rejects.toMatchObject({ code: "SESS_CLOSED" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("provides one store-wide audit cursor across sessions", async () => {
+    const store = openSqliteStore(dbPath);
+    try {
+      const a = await store.createSession({ sessionId: "sess-a" });
+      const b = await store.createSession({ sessionId: "sess-b" });
+      await store.appendEvent(a.sessionId, createEvent("session.created", {
+        sessionId: a.sessionId,
+      }, { eventId: "evt-global-a" }));
+      await store.appendEvent(b.sessionId, createEvent("session.created", {
+        sessionId: b.sessionId,
+      }, { eventId: "evt-global-b" }));
+      const first = await store.readAuditEvents({ afterGlobalSeq: -1, limit: 1 });
+      expect(first.events).toHaveLength(1);
+      expect(first.hasMore).toBe(true);
+      const second = await store.readAuditEvents({
+        afterGlobalSeq: first.nextAfterGlobalSeq,
+        limit: 1,
+      });
+      expect(second.events).toHaveLength(1);
+      expect(second.events[0]!.globalSeq).toBeGreaterThan(first.events[0]!.globalSeq);
+      expect(new Set([
+        first.events[0]!.sessionId,
+        second.events[0]!.sessionId,
+      ])).toEqual(new Set([a.sessionId, b.sessionId]));
+    } finally {
+      store.close();
+    }
+  });
+
   it("re-opens the same session with its existing record", () => {
     const first = makeSession("kernel-0001");
     const id = first.sessionId;
@@ -233,6 +492,59 @@ describe("file-level helpers", () => {
 });
 
 describe("store file layout", () => {
+  it("migrates the M1 schema in place without changing existing event order", async () => {
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const legacy = new DatabaseSync(dbPath);
+    legacy.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO meta (key, value) VALUES ('schema_version', '1');
+      CREATE TABLE sessions (
+        session_id TEXT PRIMARY KEY,
+        task_id TEXT,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        closed_at TEXT
+      );
+      CREATE TABLE events (
+        session_id TEXT NOT NULL REFERENCES sessions (session_id),
+        seq INTEGER NOT NULL,
+        event_id TEXT NOT NULL,
+        at TEXT NOT NULL,
+        actor TEXT,
+        type TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (session_id, seq)
+      );
+    `);
+    const event = createEvent("session.created", { sessionId: "sess-legacy" }, {
+      eventId: "evt-legacy",
+      at: "2026-01-01T00:00:00.000Z",
+    });
+    legacy.prepare(
+      "INSERT INTO sessions (session_id, task_id, status, created_at) VALUES (?, ?, 'active', ?)",
+    ).run("sess-legacy", "m1-sessions-sqlite", "2026-01-01T00:00:00.000Z");
+    legacy.prepare(
+      "INSERT INTO events (session_id, seq, event_id, at, actor, type, payload) VALUES (?, 0, ?, ?, NULL, ?, ?)",
+    ).run("sess-legacy", event.eventId, event.at, event.type, JSON.stringify(event));
+    legacy.close();
+
+    const migrated = openSqliteSession(dbPath, { sessionId: "sess-legacy" });
+    try {
+      expect((await migrated.log.read()).events.map((item) => item.seq)).toEqual([0]);
+      expect(await migrated.log.append(createEvent("task.updated", {
+        taskId: "m1-sessions-sqlite",
+        phase: "delivered",
+      }, { eventId: "evt-after-migration" }))).toBe(1);
+      const db = new DatabaseSync(dbPath);
+      const version = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+        .get() as { value: string };
+      db.close();
+      expect(version.value).toBe("2");
+    } finally {
+      migrated.close();
+    }
+  });
+
   it("refuses to write to an uncreatable location with a plain error", () => {
     const blockedParent = join(dir, "afile");
     writeFileSync(blockedParent, "i am a file, not a directory");

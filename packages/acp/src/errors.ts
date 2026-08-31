@@ -7,6 +7,7 @@ export type AcpProtocolErrorCode =
   | "ACP_PROTOCOL_VERSION"
   | "ACP_NOT_INITIALIZED"
   | "ACP_SESSION_NOT_FOUND"
+  | "ACP_SESSION_NOT_RESTORABLE"
   | "ACP_SESSION_ALREADY_RUN"
   | "ACP_SESSION_LIMIT"
   | "ACP_PERMISSION_NOT_FOUND"
@@ -24,6 +25,7 @@ export const ACP_RPC_ERROR_CODES = {
   protocolVersion: -32001,
   notInitialized: -32002,
   sessionNotFound: -32010,
+  sessionNotRestorable: -32013,
   sessionAlreadyRun: -32011,
   sessionLimit: -32012,
   permissionNotFound: -32020,

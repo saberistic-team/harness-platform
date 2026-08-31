@@ -4,6 +4,7 @@ import {
   acpCancelSessionResultSchema,
   acpInitializeResultSchema,
   acpNewSessionResultSchema,
+  acpRestoreSessionResultSchema,
   acpPermissionResponseResultSchema,
   acpPromptResultSchema,
   decodeAcpMessage,
@@ -13,6 +14,8 @@ import {
   type AcpInitializeResult,
   type AcpNewSessionParams,
   type AcpNewSessionResult,
+  type AcpRestoreSessionParams,
+  type AcpRestoreSessionResult,
   type AcpPermissionResponseParams,
   type AcpPermissionResponseResult,
   type AcpPromptParams,
@@ -279,6 +282,10 @@ export class AcpClient {
 
   newSession(params: AcpNewSessionParams): Promise<AcpNewSessionResult> {
     return this.call(ACP_METHODS.newSession, params, acpNewSessionResultSchema);
+  }
+
+  restoreSession(params: AcpRestoreSessionParams): Promise<AcpRestoreSessionResult> {
+    return this.call(ACP_METHODS.restoreSession, params, acpRestoreSessionResultSchema);
   }
 
   prompt(params: AcpPromptParams): Promise<AcpPromptResult> {

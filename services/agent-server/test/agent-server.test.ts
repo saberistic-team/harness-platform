@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { AcpClient, ACP_PROTOCOL_VERSION, AcpRemoteError } from "@harness/acp";
-import type { AnyHarnessEvent } from "@harness/events";
+import { createEvent, type AnyHarnessEvent } from "@harness/events";
 import { FakeModel } from "@harness/models";
+import {
+  openSqliteStore,
+  type EventLog,
+  type SessionStore,
+} from "@harness/sessions";
 import type {
   CommandExecutor,
   ExecuteOptions,
@@ -169,6 +174,32 @@ describe("AgentConnection", () => {
     }
   });
 
+  it("advertises restore only when a durable session store is available", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-agent-no-restore-"));
+    const sent: Array<Record<string, any>> = [];
+    try {
+      const connection = new AgentConnection(
+        (wire) => sent.push(JSON.parse(wire)),
+        {
+          workspaceRoot: root,
+          sessionDbPath: false,
+          models: { fake: () => new FakeModel() },
+        },
+      );
+      connection.receive(rpc(1, "initialize", {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        clientName: "no-restore-test",
+        capabilities: { streaming: true, permissioning: true, sessions: true },
+      }));
+      const initialized = await until(() => sent.find((item) => item.id === 1));
+      expect(initialized.result.capabilities.sessions).toBe(false);
+      connection.close();
+      await connection.waitForIdle();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("atomically reserves one kernel run and resolves ask only by correlated response", async () => {
     const root = mkdtempSync(join(tmpdir(), "harness-agent-"));
     const sent: Array<Record<string, any>> = [];
@@ -251,6 +282,358 @@ describe("AgentConnection", () => {
       expect(stale.error.code).toBe(-32021);
       connection.close();
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("restores committed events by cursor and closes an interrupted turn without rerunning it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-agent-restore-"));
+    const store = openSqliteStore(join(root, "sessions.sqlite"));
+    const sent: Array<Record<string, any>> = [];
+    try {
+      await store.createSession({
+        sessionId: "sess-crashed",
+        taskId: "m4-control-plane",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        metadata: {
+          kind: "agent-session",
+          workspace: root,
+          modelName: "fake",
+          ownerId: "dead-agent",
+          leaseExpiresAt: "2026-01-01T00:00:05.000Z",
+        },
+      });
+      await store.appendEvent("sess-crashed", createEvent(
+        "session.created",
+        { sessionId: "sess-crashed" },
+        { eventId: "event-0", at: "2026-01-01T00:00:00.000Z" },
+      ));
+      await store.appendEvent("sess-crashed", createEvent(
+        "agent.started",
+        {
+          agentId: "agent-dead",
+          sessionId: "sess-crashed",
+          taskId: "m4-control-plane",
+          model: "fake",
+        },
+        { eventId: "event-1", at: "2026-01-01T00:00:01.000Z" },
+      ));
+      await store.appendEvent("sess-crashed", createEvent(
+        "model.request",
+        { requestId: "request-uncertain", model: "fake", messageCount: 1 },
+        { eventId: "event-2", at: "2026-01-01T00:00:02.000Z" },
+      ));
+
+      let id = 0;
+      const model = new FakeModel([{ content: "must not run" }]);
+      const connection = new AgentConnection(
+        (wire) => sent.push(JSON.parse(wire)),
+        {
+          workspaceRoot: root,
+          sessionStore: store,
+          models: { fake: () => model },
+          now: () => "2026-01-01T00:01:00.000Z",
+          newId: (prefix) => `${prefix}-${++id}`,
+        },
+      );
+      connection.receive(rpc(1, "initialize", {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        clientName: "restore-test",
+        capabilities: { streaming: true, permissioning: true, sessions: true },
+      }));
+      const initialized = await until(() => sent.find((item) => item.id === 1));
+      expect(initialized.result.capabilities.sessions).toBe(true);
+
+      connection.receive(rpc(2, "session/restore", {
+        sessionId: "sess-crashed",
+        afterSeq: 0,
+        limit: 2,
+      }));
+      const first = await until(() => sent.find((item) => item.id === 2));
+      expect(first.error).toBeUndefined();
+      expect(first.result).toMatchObject({
+        status: "interrupted",
+        replayedFromSeq: 1,
+        replayedThroughSeq: 2,
+        replayedEvents: 2,
+        hasMore: true,
+      });
+      const firstReplay = sent.filter(
+        (item) => item.method === "session/event" && item.params.sessionId === "sess-crashed",
+      );
+      expect(firstReplay.map((item) => item.params.seq)).toEqual([1, 2]);
+
+      connection.receive(rpc(3, "session/restore", {
+        sessionId: "sess-crashed",
+        afterSeq: 2,
+        limit: 10,
+      }));
+      const second = await until(() => sent.find((item) => item.id === 3));
+      expect(second.result).toMatchObject({
+        status: "interrupted",
+        replayedFromSeq: 3,
+        replayedThroughSeq: 3,
+        replayedEvents: 1,
+        hasMore: false,
+      });
+      const allReplay = sent.filter(
+        (item) => item.method === "session/event" && item.params.sessionId === "sess-crashed",
+      );
+      expect(allReplay.map((item) => item.params.seq)).toEqual([1, 2, 3]);
+      expect(allReplay.at(-1)?.params.event).toMatchObject({
+        type: "session.restored",
+        data: { outcome: "interrupted" },
+      });
+      expect((await store.getSession("sess-crashed")).status).toBe("closed");
+      expect(await store.eventLog("sess-crashed").size()).toBe(4);
+      expect(model.requests).toHaveLength(0);
+
+      connection.close();
+      await connection.waitForIdle();
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects restore while a durable owner lease is live and rejects future cursors", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-agent-restore-guards-"));
+    const store = openSqliteStore(join(root, "sessions.sqlite"), {
+      now: () => "2026-01-01T00:01:00.000Z",
+    });
+    const sent: Array<Record<string, any>> = [];
+    try {
+      await store.createSession({
+        sessionId: "sess-live",
+        metadata: {
+          kind: "agent-session",
+          workspace: root,
+          modelName: "fake",
+          ownerId: "other-replica",
+          leaseExpiresAt: "2026-01-01T00:02:00.000Z",
+        },
+      });
+      await store.appendEvent("sess-live", createEvent(
+        "session.created",
+        { sessionId: "sess-live" },
+        { eventId: "live-event", at: "2026-01-01T00:00:00.000Z" },
+      ));
+      const connection = new AgentConnection(
+        (wire) => sent.push(JSON.parse(wire)),
+        {
+          workspaceRoot: root,
+          sessionStore: store,
+          models: { fake: () => new FakeModel() },
+          now: () => "2026-01-01T00:01:00.000Z",
+        },
+      );
+      connection.receive(rpc(1, "initialize", {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        clientName: "restore-guards",
+        capabilities: { streaming: true, permissioning: true, sessions: true },
+      }));
+      await until(() => sent.find((item) => item.id === 1));
+
+      connection.receive(rpc(2, "session/restore", {
+        sessionId: "sess-live",
+        afterSeq: -1,
+      }));
+      const live = await until(() => sent.find((item) => item.id === 2));
+      expect(live.error).toMatchObject({
+        code: -32013,
+        data: { code: "ACP_SESSION_NOT_RESTORABLE" },
+      });
+      expect((await store.getSession("sess-live")).status).toBe("active");
+      expect(await store.eventLog("sess-live").size()).toBe(1);
+
+      await store.transitionSession(
+        "sess-live",
+        "active",
+        "closed",
+        "2026-01-01T00:01:30.000Z",
+      );
+      connection.receive(rpc(3, "session/restore", {
+        sessionId: "sess-live",
+        afterSeq: 99,
+      }));
+      const future = await until(() => sent.find((item) => item.id === 3));
+      expect(future.error).toMatchObject({
+        code: -32602,
+        data: { code: "ACP_INVALID_PARAMS" },
+      });
+      expect(sent.filter((item) => item.method === "session/event")).toHaveLength(0);
+
+      connection.close();
+      await connection.waitForIdle();
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a journal-failed turn active so restore records it as interrupted", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-agent-journal-failure-"));
+    let clock = "2026-01-01T00:00:00.000Z";
+    const store = openSqliteStore(join(root, "sessions.sqlite"), { now: () => clock });
+    const failingStore = new Proxy(store, {
+      get(target, property) {
+        if (property === "eventLog") {
+          return (sessionId: string, options?: { ownerId: string }): EventLog => {
+            const delegate = target.eventLog(sessionId, options);
+            const wrapped: EventLog = {
+              async append(event) {
+                return (await wrapped.appendSequenced(event)).seq;
+              },
+              appendSequenced(event) {
+                if (event.type === "model.request") {
+                  return Promise.reject(new Error("journal unavailable"));
+                }
+                return delegate.appendSequenced(event);
+              },
+              read: (options) => delegate.read(options),
+              slice: (from, to) => delegate.slice(from, to),
+              size: () => delegate.size(),
+            };
+            return wrapped;
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as SessionStore;
+    const sent: Array<Record<string, any>> = [];
+    try {
+      const connection = new AgentConnection(
+        (wire) => sent.push(JSON.parse(wire)),
+        {
+          workspaceRoot: root,
+          sessionStore: failingStore,
+          models: { fake: () => new FakeModel([{ content: "must not run" }]) },
+          now: () => clock,
+          sessionLeaseMs: 60_000,
+        },
+      );
+      connection.receive(rpc(1, "initialize", {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        clientName: "journal-failure",
+        capabilities: { streaming: true, permissioning: true, sessions: true },
+      }));
+      await until(() => sent.find((item) => item.id === 1));
+      connection.receive(rpc(2, "session/new", { workspace: ".", model: "fake" }));
+      const created = await until(() => sent.find((item) => item.id === 2));
+      connection.receive(rpc(3, "session/prompt", {
+        sessionId: created.result.sessionId,
+        content: "do work",
+      }));
+      const failed = await until(() => sent.find((item) => item.id === 3));
+      expect(failed.error).toBeDefined();
+      expect((await store.getSession(created.result.sessionId)).status).toBe("active");
+      connection.close();
+      await connection.waitForIdle();
+
+      clock = "2026-01-01T00:01:01.000Z";
+      const replayed: Array<Record<string, any>> = [];
+      const recovery = new AgentConnection(
+        (wire) => replayed.push(JSON.parse(wire)),
+        {
+          workspaceRoot: root,
+          sessionStore: store,
+          models: { fake: () => new FakeModel() },
+          now: () => clock,
+        },
+      );
+      recovery.receive(rpc(4, "initialize", {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        clientName: "journal-recovery",
+        capabilities: { streaming: true, permissioning: true, sessions: true },
+      }));
+      await until(() => replayed.find((item) => item.id === 4));
+      recovery.receive(rpc(5, "session/restore", {
+        sessionId: created.result.sessionId,
+        afterSeq: -1,
+      }));
+      const restored = await until(() => replayed.find((item) => item.id === 5));
+      expect(restored.result.status).toBe("interrupted");
+      expect((await store.getSession(created.result.sessionId)).status).toBe("closed");
+      recovery.close();
+      await recovery.waitForIdle();
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("closes a crash-after-agent.stopped as completed and rejects non-agent streams", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-agent-restore-terminal-"));
+    const store = openSqliteStore(join(root, "sessions.sqlite"));
+    const sent: Array<Record<string, any>> = [];
+    try {
+      const metadata = {
+        kind: "agent-session",
+        workspace: root,
+        modelName: "fake",
+        ownerId: "dead-agent",
+        leaseExpiresAt: "2026-01-01T00:00:05.000Z",
+      };
+      await store.createSession({ sessionId: "sess-terminal", metadata });
+      await store.appendEvent("sess-terminal", createEvent("agent.stopped", {
+        agentId: "agent-dead",
+        status: "completed",
+        steps: 1,
+        toolCalls: 0,
+      }, { eventId: "event-terminal", at: "2026-01-01T00:00:04.000Z" }));
+      await store.createSession({
+        sessionId: "stream-control-plane",
+        metadata: { kind: "control-plane", instanceId: "cp-1" },
+      });
+
+      const model = new FakeModel([{ content: "must not run" }]);
+      const connection = new AgentConnection(
+        (wire) => sent.push(JSON.parse(wire)),
+        {
+          workspaceRoot: root,
+          sessionStore: store,
+          models: { fake: () => model },
+          now: () => "2026-01-01T00:01:00.000Z",
+        },
+      );
+      connection.receive(rpc(1, "initialize", {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        clientName: "terminal-restore-test",
+        capabilities: { streaming: true, permissioning: true, sessions: true },
+      }));
+      await until(() => sent.find((item) => item.id === 1));
+
+      connection.receive(rpc(2, "session/restore", {
+        sessionId: "sess-terminal",
+        afterSeq: -1,
+      }));
+      const completed = await until(() => sent.find((item) => item.id === 2));
+      expect(completed.result).toMatchObject({
+        status: "completed",
+        replayedEvents: 1,
+        hasMore: false,
+      });
+      expect((await store.getSession("sess-terminal")).status).toBe("closed");
+      expect((await store.readSessionEvents("sess-terminal")).events)
+        .toHaveLength(1);
+      expect(model.requests).toHaveLength(0);
+
+      connection.receive(rpc(3, "session/restore", {
+        sessionId: "stream-control-plane",
+        afterSeq: -1,
+      }));
+      const foreign = await until(() => sent.find((item) => item.id === 3));
+      expect(foreign.error).toMatchObject({
+        code: -32013,
+        data: { code: "ACP_SESSION_NOT_RESTORABLE" },
+      });
+      expect((await store.getSession("stream-control-plane")).status).toBe("active");
+
+      connection.close();
+      await connection.waitForIdle();
+    } finally {
+      store.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -497,6 +880,27 @@ describe("AgentConnection", () => {
 });
 
 describe("ACP WebSocket server", () => {
+  it("keeps liveness shallow and fails readiness when durable storage is unavailable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-agent-health-"));
+    const store = openSqliteStore(join(root, "sessions.sqlite"));
+    store.close();
+    const server = await startAgentServer({
+      workspaceRoot: root,
+      sessionStore: store,
+      host: "127.0.0.1",
+      port: 0,
+      models: { fake: () => new FakeModel() },
+    });
+    const httpUrl = server.url.replace(/^ws:/u, "http:").replace(/\/acp$/u, "");
+    try {
+      expect((await fetch(`${httpUrl}/health/live`)).status).toBe(200);
+      expect((await fetch(`${httpUrl}/health/ready`)).status).toBe(503);
+    } finally {
+      await server.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("streams one kernel run over a real WebSocket", async () => {
     const root = mkdtempSync(join(tmpdir(), "harness-agent-ws-"));
     const server = await startAgentServer({

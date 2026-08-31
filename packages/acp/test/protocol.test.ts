@@ -15,6 +15,7 @@ describe("ACP wire contract", () => {
     const messages = [
       { id: 1, method: ACP_METHODS.initialize, params: { protocolVersion: ACP_PROTOCOL_VERSION, clientName: "test", capabilities: {} } },
       { id: 2, method: ACP_METHODS.newSession, params: { workspace: ".", taskId: "m3-services", model: "fake" } },
+      { id: 6, method: ACP_METHODS.restoreSession, params: { sessionId: "s1", afterSeq: 4, limit: 64 } },
       { id: 3, method: ACP_METHODS.prompt, params: { sessionId: "s1", content: "hello" } },
       { id: 4, method: ACP_METHODS.respondPermission, params: { sessionId: "s1", permissionId: "p1", decision: "deny" } },
       { id: 5, method: ACP_METHODS.cancelSession, params: { sessionId: "s1" } },

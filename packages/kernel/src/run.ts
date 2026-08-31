@@ -239,7 +239,12 @@ export interface RunOptions {
   taskId?: string;
   sessionId?: string;
   workspace?: string;
-  onEvent?: (event: AnyHarnessEvent) => void;
+  /**
+   * Durable event sink. The kernel awaits this hook before advancing across a
+   * model or tool boundary; rejection fails the run instead of leaving an
+   * unaudited side effect behind.
+   */
+  onEvent?: (event: AnyHarnessEvent) => unknown;
   permission?: PermissionController;
   signal?: AbortSignal;
   now?: () => string;
@@ -301,14 +306,9 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   const at = opts.now ?? (() => new Date().toISOString());
   const newId = opts.newId ?? ((prefix: string) => `${prefix}-${randomUUID()}`);
   const events: AnyHarnessEvent[] = [];
-  const emit = (event: AnyHarnessEvent) => {
+  const emit = async (event: AnyHarnessEvent): Promise<void> => {
     events.push(event);
-    try {
-      opts.onEvent?.(event);
-    } catch {
-      // Observers cannot change kernel control flow. Services own their own
-      // persistence/transport failure handling outside this synchronous hook.
-    }
+    await opts.onEvent?.(event);
   };
 
   const budget = opts.budget ?? {};
@@ -345,39 +345,39 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       pct: limit > 0 ? Math.round((used / limit) * 100) : 100,
     }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
 
-  const stop = (
+  const stop = async (
     status: "completed" | "failed" | "canceled" | "budget_exceeded",
     note?: string,
   ) => {
     if (stopped) return;
     stopped = true;
-    emit(createEvent("agent.stopped", {
+    await emit(createEvent("agent.stopped", {
       agentId, status, steps, toolCalls, note,
     }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
   };
 
-  const cancelIfAborted = () => {
+  const cancelIfAborted = async () => {
     if (!opts.signal?.aborted) return;
-    stop("canceled", "abort signal received");
+    await stop("canceled", "abort signal received");
     throw new RunCanceledError();
   };
 
-  emit(createEvent("session.created", { sessionId, workspace: opts.workspace }, {
+  await emit(createEvent("session.created", { sessionId, workspace: opts.workspace }, {
     at: at(), eventId: newId("evt"), actor: "kernel",
   }));
-  emit(createEvent("agent.started", {
+  await emit(createEvent("agent.started", {
     agentId, sessionId, taskId, model: model.name,
   }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
 
   while (steps < maxSteps) {
-    cancelIfAborted();
+    await cancelIfAborted();
     const tokenLimitBeforeRequest = budget.maxModelTokens;
     if (
       tokenLimitBeforeRequest !== undefined &&
       usage.totalTokens >= tokenLimitBeforeRequest
     ) {
-      budgetWarning("tokens", usage.totalTokens, tokenLimitBeforeRequest);
-      stop("budget_exceeded", `max_model_tokens=${tokenLimitBeforeRequest}`);
+      await budgetWarning("tokens", usage.totalTokens, tokenLimitBeforeRequest);
+      await stop("budget_exceeded", `max_model_tokens=${tokenLimitBeforeRequest}`);
       throw new BudgetExceededError(
         "tokens",
         usage.totalTokens,
@@ -386,7 +386,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
     }
     steps++;
     const requestId = newId("req");
-    emit(createEvent("model.request", {
+    await emit(createEvent("model.request", {
       requestId, model: model.name, messageCount: messages.length,
     }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
 
@@ -402,21 +402,21 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
         signal: opts.signal,
       });
     } catch (error) {
-      emit(createEvent("model.response", {
+      await emit(createEvent("model.response", {
         requestId,
         model: model.name,
         finishReason: "error",
         usage: emptyUsage(),
       }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
       const canceled = opts.signal?.aborted || error instanceof RunCanceledError;
-      emit(createEvent("error", {
+      await emit(createEvent("error", {
         code: canceled ? "RUN_CANCELED" : safeErrorCode(error),
         message: canceled
           ? "agent run canceled"
           : `model completion failed for ${model.name}`,
         retryable: canceled ? false : Boolean((error as { retryable?: unknown })?.retryable),
       }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
-      stop(canceled ? "canceled" : "failed", canceled ? "abort signal received" : "model completion failed");
+      await stop(canceled ? "canceled" : "failed", canceled ? "abort signal received" : "model completion failed");
       if (canceled) throw new RunCanceledError();
       throw error;
     }
@@ -424,18 +424,18 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
     try {
       validateModelResponse(response);
     } catch (error) {
-      emit(createEvent("model.response", {
+      await emit(createEvent("model.response", {
         requestId,
         model: model.name,
         finishReason: "error",
         usage: emptyUsage(),
       }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
-      emit(createEvent("error", {
+      await emit(createEvent("error", {
         code: "MODEL_INVALID_RESPONSE",
         message: "model returned an invalid or oversized response",
         retryable: false,
       }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
-      stop("failed", "invalid model response");
+      await stop("failed", "invalid model response");
       throw error;
     }
 
@@ -445,24 +445,24 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       !Number.isSafeInteger(accumulatedUsage.completionTokens) ||
       !Number.isSafeInteger(accumulatedUsage.totalTokens)
     ) {
-      emit(createEvent("model.response", {
+      await emit(createEvent("model.response", {
         requestId,
         model: model.name,
         finishReason: response.finishReason,
         usage: response.usage,
       }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
-      emit(createEvent("error", {
+      await emit(createEvent("error", {
         code: "MODEL_INVALID_RESPONSE",
         message: "model usage overflowed safe budget accounting",
         retryable: false,
       }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
-      stop("failed", "model usage overflowed safe budget accounting");
+      await stop("failed", "model usage overflowed safe budget accounting");
       throw new InvalidModelResponseError(
         "model usage overflowed safe budget accounting",
       );
     }
     usage = accumulatedUsage;
-    emit(createEvent("model.response", {
+    await emit(createEvent("model.response", {
       requestId,
       model: model.name,
       finishReason: response.finishReason,
@@ -472,13 +472,13 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
     const tokenLimit = budget.maxModelTokens;
     if (tokenLimit !== undefined) {
       if (usage.totalTokens > tokenLimit) {
-        budgetWarning("tokens", usage.totalTokens, tokenLimit);
-        stop("budget_exceeded", `max_model_tokens=${tokenLimit}`);
+        await budgetWarning("tokens", usage.totalTokens, tokenLimit);
+        await stop("budget_exceeded", `max_model_tokens=${tokenLimit}`);
         throw new BudgetExceededError("tokens", usage.totalTokens, tokenLimit);
       }
       if (!warnedTokens && usage.totalTokens >= tokenLimit * BUDGET_WARNING_THRESHOLD) {
         warnedTokens = true;
-        budgetWarning("tokens", usage.totalTokens, tokenLimit);
+        await budgetWarning("tokens", usage.totalTokens, tokenLimit);
       }
     }
 
@@ -486,32 +486,32 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       (response.finishReason === "tool_calls" && response.toolCalls.length === 0) ||
       (response.finishReason !== "tool_calls" && response.toolCalls.length > 0);
     if (finishReasonMismatch) {
-      emit(createEvent("error", {
+      await emit(createEvent("error", {
         code: "MODEL_INVALID_RESPONSE",
         message: "model finish reason and tool calls are inconsistent",
       }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
-      stop("failed", "invalid model response");
+      await stop("failed", "invalid model response");
       throw new InvalidModelResponseError(
         "finishReason tool_calls requires calls, and calls require finishReason tool_calls",
       );
     }
 
     if (response.finishReason === "error") {
-      emit(createEvent("error", {
+      await emit(createEvent("error", {
         code: "MODEL_INVALID_RESPONSE",
         message: "model returned an error finish reason",
       }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
-      stop("failed", "model returned an error finish reason");
+      await stop("failed", "model returned an error finish reason");
       throw new InvalidModelResponseError("model returned finishReason error");
     }
 
     if (response.finishReason === "length") {
       finalText = response.content;
-      emit(createEvent("error", {
+      await emit(createEvent("error", {
         code: "MODEL_OUTPUT_TRUNCATED",
         message: "model output ended at the provider length limit",
       }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
-      stop("failed", "model output truncated");
+      await stop("failed", "model output truncated");
       break;
     }
 
@@ -542,17 +542,17 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       };
       toolTranscriptBytes += argumentBytes;
     } catch {
-      emit(createEvent("error", {
+      await emit(createEvent("error", {
         code: "MODEL_INVALID_RESPONSE",
         message: "model returned tool arguments that are not bounded JSON",
       }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
-      stop("failed", "invalid model tool arguments");
+      await stop("failed", "invalid model tool arguments");
       throw new InvalidModelResponseError("tool arguments must be bounded JSON values");
     }
 
     if (response.toolCalls.length === 0) {
       finalText = response.content;
-      stop("completed");
+      await stop("completed");
       done = true;
       break;
     }
@@ -561,31 +561,31 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       tokenLimit !== undefined &&
       usage.totalTokens >= tokenLimit
     ) {
-      budgetWarning("tokens", usage.totalTokens, tokenLimit);
-      stop("budget_exceeded", `max_model_tokens=${tokenLimit}`);
+      await budgetWarning("tokens", usage.totalTokens, tokenLimit);
+      await stop("budget_exceeded", `max_model_tokens=${tokenLimit}`);
       throw new BudgetExceededError("tokens", usage.totalTokens, tokenLimit);
     }
 
     messages.push({ role: "assistant", content: response.content, toolCalls: response.toolCalls });
 
     for (const call of response.toolCalls) {
-      cancelIfAborted();
+      await cancelIfAborted();
       const callLimit = budget.maxToolCalls;
       if (callLimit !== undefined) {
         if (toolCalls >= callLimit) {
-          budgetWarning("tool_calls", toolCalls, callLimit);
-          stop("budget_exceeded", `max_tool_calls=${callLimit}`);
+          await budgetWarning("tool_calls", toolCalls, callLimit);
+          await stop("budget_exceeded", `max_tool_calls=${callLimit}`);
           throw new BudgetExceededError("tool_calls", toolCalls, callLimit);
         }
         if (!warnedCalls && toolCalls >= callLimit - 1) {
           warnedCalls = true;
-          budgetWarning("tool_calls", toolCalls, callLimit);
+          await budgetWarning("tool_calls", toolCalls, callLimit);
         }
       }
 
       const callId = newId("call");
       const started = Date.now();
-      emit(createEvent("tool.call", { callId, tool: call.name, input: call.arguments }, {
+      await emit(createEvent("tool.call", { callId, tool: call.name, input: call.arguments }, {
         at: at(), eventId: newId("evt"), actor: "kernel",
       }));
 
@@ -647,7 +647,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
                 code: "TOOL_AUTHORIZATION_FAILED",
                 message: "tool authorization failed closed",
               };
-              emit(createEvent("error", {
+              await emit(createEvent("error", {
                 code: "TOOL_AUTHORIZATION_FAILED",
                 message: `authorization failed for tool ${call.name}`,
                 retryable: false,
@@ -655,7 +655,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
             }
 
             if (intent && decision) {
-              emit(createEvent("policy.decision", {
+              await emit(createEvent("policy.decision", {
                 action: intent.action,
                 subject: intent.subject,
                 effect: decision.effect,
@@ -688,7 +688,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
               } catch {
                 resolutionPromise = Promise.resolve({ decision: "deny", note: "permission resolver failed" });
               }
-              emit(createEvent("permission.requested", request, {
+              await emit(createEvent("permission.requested", request, {
                 at: at(), eventId: newId("evt"), actor: "kernel",
               }));
               let resolution: PermissionResolution;
@@ -706,7 +706,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
                   resolution = { decision: "deny", note: "permission resolver failed" };
                 }
               }
-              emit(createEvent("permission.resolved", {
+              await emit(createEvent("permission.resolved", {
                 permissionId: request.permissionId,
                 sessionId: request.sessionId,
                 callId: request.callId,
@@ -730,10 +730,9 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
           }
 
           if (permitted) {
-            // A service observer may abort synchronously when it cannot safely
-            // record/transport the authorization trail. Never cross the tool
-            // side-effect boundary after that failure.
-            cancelIfAborted();
+            // The awaited event sink above is the durability fence: never
+            // cross the tool side-effect boundary after journal failure.
+            await cancelIfAborted();
             try {
               const rawOutput = await tool.execute(params.data, {
                 signal: opts.signal,
@@ -778,7 +777,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       }
 
       toolCalls++;
-      emit(createEvent("tool.result", {
+      await emit(createEvent("tool.result", {
         callId,
         tool: call.name,
         ok,
@@ -795,7 +794,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
           : JSON.stringify({ error: { code: error?.code, message: error?.message } }),
       });
       if (canceledWhileAwaitingPermission || canceledDuringTool) {
-        stop(
+        await stop(
           "canceled",
           canceledWhileAwaitingPermission
             ? "abort signal received while awaiting permission"
@@ -806,7 +805,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
     }
   }
 
-  if (!done) stop("failed", `max_steps=${maxSteps} reached without a final answer`);
+  if (!done) await stop("failed", `max_steps=${maxSteps} reached without a final answer`);
   return {
     status: done ? "completed" : "failed",
     text: finalText,

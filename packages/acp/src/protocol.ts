@@ -13,6 +13,9 @@ const MAX_PROMPT_BYTES = 512 * 1024;
 const MAX_RESULT_TEXT_BYTES = 512 * 1024;
 const MAX_MODELS = 128;
 const MAX_STREAM_REPLAY_EVENTS = 128;
+// Keep this aligned with @harness/sessions' durable page bound. ACP cannot
+// advertise a page size that the backing store will reject after decoding.
+const MAX_RESTORE_EVENTS = 1_000;
 
 function fitsUtf8Bytes(value: string, maximum: number): boolean {
   let bytes = 0;
@@ -38,6 +41,7 @@ const safePositiveInteger = z.number().int().positive().safe();
 export const ACP_METHODS = {
   initialize: "initialize",
   newSession: "session/new",
+  restoreSession: "session/restore",
   prompt: "session/prompt",
   respondPermission: "permission/respond",
   cancelSession: "session/cancel",
@@ -79,6 +83,26 @@ export const acpNewSessionParamsSchema = z.object({
 }).strict();
 
 export const acpNewSessionResultSchema = z.object({ sessionId: boundedString(MAX_SESSION_ID_BYTES) }).strict();
+
+/**
+ * Restore is a replay operation, not permission to repeat an interrupted turn.
+ * `afterSeq` is the last sequence the client durably observed; the server only
+ * streams committed events whose sequence is greater than that cursor.
+ */
+export const acpRestoreSessionParamsSchema = z.object({
+  sessionId: boundedString(MAX_SESSION_ID_BYTES),
+  afterSeq: z.number().int().min(-1).safe(),
+  limit: z.number().int().positive().max(MAX_RESTORE_EVENTS).safe().default(MAX_STREAM_REPLAY_EVENTS),
+}).strict();
+
+export const acpRestoreSessionResultSchema = z.object({
+  sessionId: boundedString(MAX_SESSION_ID_BYTES),
+  status: z.enum(["completed", "interrupted"]),
+  replayedFromSeq: z.number().int().nonnegative().safe(),
+  replayedThroughSeq: z.number().int().min(-1).safe(),
+  replayedEvents: z.number().int().nonnegative().max(MAX_RESTORE_EVENTS).safe(),
+  hasMore: z.boolean(),
+}).strict();
 
 export const acpPromptParamsSchema = z.object({
   sessionId: boundedString(MAX_SESSION_ID_BYTES),
@@ -124,6 +148,8 @@ export type AcpInitializeParams = z.infer<typeof acpInitializeParamsSchema>;
 export type AcpInitializeResult = z.infer<typeof acpInitializeResultSchema>;
 export type AcpNewSessionParams = z.infer<typeof acpNewSessionParamsSchema>;
 export type AcpNewSessionResult = z.infer<typeof acpNewSessionResultSchema>;
+export type AcpRestoreSessionParams = z.infer<typeof acpRestoreSessionParamsSchema>;
+export type AcpRestoreSessionResult = z.infer<typeof acpRestoreSessionResultSchema>;
 export type AcpPromptParams = z.infer<typeof acpPromptParamsSchema>;
 export type AcpPromptResult = z.infer<typeof acpPromptResultSchema>;
 export type AcpPermissionResponseParams = z.infer<typeof acpPermissionResponseParamsSchema>;
@@ -187,6 +213,7 @@ const notificationEnvelopeSchema = z.object({
 const requestParamSchemas = {
   [ACP_METHODS.initialize]: acpInitializeParamsSchema,
   [ACP_METHODS.newSession]: acpNewSessionParamsSchema,
+  [ACP_METHODS.restoreSession]: acpRestoreSessionParamsSchema,
   [ACP_METHODS.prompt]: acpPromptParamsSchema,
   [ACP_METHODS.respondPermission]: acpPermissionResponseParamsSchema,
   [ACP_METHODS.cancelSession]: acpCancelSessionParamsSchema,

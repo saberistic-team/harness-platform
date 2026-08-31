@@ -374,6 +374,40 @@ describe("runAgent", () => {
     ]);
   });
 
+  it("awaits durable event publication before crossing a tool boundary", async () => {
+    let sideEffects = 0;
+    const tools = new ToolRegistry([
+      createTool({
+        name: "danger",
+        description: "side effect",
+        parameters: z.object({}),
+        authorization: () => ({
+          action: "process.exec",
+          subject: "pnpm test",
+          scope: "once",
+        }),
+        execute: () => { sideEffects++; return "should not run"; },
+      }),
+    ]);
+
+    await expect(runAgent({
+      ...base,
+      tools,
+      model: new FakeModel([{
+        toolCalls: [{ id: "durable-1", name: "danger", arguments: {} }],
+      }]),
+      permission: {
+        decide: () => ({ effect: "allow", reason: "test" }),
+      },
+      onEvent: async (event) => {
+        if (event.type === "policy.decision") {
+          throw new Error("journal unavailable");
+        }
+      },
+    })).rejects.toThrow("journal unavailable");
+    expect(sideEffects).toBe(0);
+  });
+
   it("reuses an approved run-scoped grant for the same action and subject", async () => {
     let resolutions = 0;
     let sideEffects = 0;

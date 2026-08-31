@@ -13,6 +13,10 @@ export interface AgentModelRegistry {
 export interface AgentServerEnvironmentConfig {
   authToken?: string;
   allowPlaintextRemote: boolean;
+  /** Shared durable session/event store used by every connection and replica. */
+  databaseUrl?: string;
+  /** Deployment-owned path that must exist before the service is Ready. */
+  readinessPath?: string;
   sandbox?: AgentSandboxOptions;
 }
 
@@ -50,6 +54,25 @@ function exactBooleanEnvironmentValue(
   if (value === "true") return true;
   if (value === "false") return false;
   throw new Error(`${name} must be exactly "true" or "false" when set`);
+}
+
+function postgresEnvironmentValue(env: NodeJS.ProcessEnv): string | undefined {
+  const value = nonEmptyEnvironmentValue(env, "HARNESS_DATABASE_URL") ??
+    nonEmptyEnvironmentValue(env, "DATABASE_URL");
+  if (value === undefined) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("HARNESS_DATABASE_URL must be an absolute PostgreSQL URL");
+  }
+  if (
+    (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") ||
+    !parsed.hostname
+  ) {
+    throw new Error("HARNESS_DATABASE_URL must use postgres:// or postgresql://");
+  }
+  return value;
 }
 
 function providerHeaderEnvironmentValue(
@@ -90,13 +113,20 @@ export function agentServerConfigFromEnvironment(
     "HARNESS_AGENT_ALLOW_PLAINTEXT_REMOTE",
   ) ?? false;
   const authToken = nonEmptyEnvironmentValue(env, "HARNESS_AGENT_TOKEN");
+  const databaseUrl = postgresEnvironmentValue(env);
+  const readinessPath = nonEmptyEnvironmentValue(env, "HARNESS_AGENT_READINESS_PATH");
+  const shared = {
+    ...(authToken ? { authToken } : {}),
+    allowPlaintextRemote,
+    ...(databaseUrl ? { databaseUrl } : {}),
+    ...(readinessPath ? { readinessPath } : {}),
+  };
   const sandboxConfigured = SANDBOX_ENVIRONMENT_KEYS.some(
     (name) => env[name] !== undefined,
   );
   if (!sandboxConfigured) {
     return {
-      ...(authToken ? { authToken } : {}),
-      allowPlaintextRemote,
+      ...shared,
     };
   }
 
@@ -122,8 +152,7 @@ export function agentServerConfigFromEnvironment(
   }
 
   return {
-    ...(authToken ? { authToken } : {}),
-    allowPlaintextRemote,
+    ...shared,
     sandbox: {
       image,
       ...(trustedLocalImage === true ? { trustedLocalImage: true } : {}),

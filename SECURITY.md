@@ -46,14 +46,18 @@ subject with pattern, no * ..........: deny   (closed for exec)
 3. **Sandbox-runner (M3, shipped)** — one container per run; network namespace
    isolated by default (`network: deny` unless the manifest has a rule);
    filesystem mounts scoped by `allowed_paths`; no host secrets in env.
-4. **Infrastructure** — the sandbox Dockerfile requires an immutable Node base
-   reference; no `RUN` with
-   network secrets; MinIO in the local compose file is dev-only and is
-   not reachable from the model's sandbox.
+4. **Infrastructure** — service and sandbox images are referenced immutably;
+   Kubernetes defaults to deny ingress and egress, grants only named service
+   edges, and gives no M4 workload Kubernetes API credentials. The suspended
+   sandbox Job template is a contract, not an executor. A future executor
+   overlay must add narrowly scoped Job permissions explicitly. The model
+   sandbox never receives a Docker socket or Kubernetes token.
 
 ## Secrets
 
-- Never in manifests, never in events, never in run reports.
+- Never commit populated secret values to manifests, events, or run reports.
+  The Kubernetes `secret.*.example.yaml` files are excluded key contracts with
+  fail-closed sentinel values, not deployable credentials.
 - Provider keys are injected at the process boundary of
   `agent-server` from environment/secret store — not from the kernel.
 - Event payloads of type `tool.call`/`tool.result` are **redacted**
@@ -88,10 +92,63 @@ identity and contents are fingerprinted and synchronously rechecked immediately
 before spawn, but a more privileged process concurrently mutating the workspace
 is outside this local boundary's threat model.
 
-When sandbox execution is enabled, the agent-server keeps its SQLite audit
-database outside the mounted workspace and rejects an in-workspace override.
-This prevents an otherwise broad `allowed_paths` entry from exposing the audit
-store to a model-controlled container.
+When sandbox execution is enabled, the agent-server keeps its durable audit
+store outside the mounted workspace (SQLite locally, Postgres when deployed)
+and rejects an in-workspace SQLite override. This prevents an otherwise broad
+`allowed_paths` entry from exposing the audit store to a model-controlled
+container.
+
+## M4 control-plane boundary
+
+- Postgres events are append-only and use canonical per-session sequence
+  numbers, a store-wide commit-ordered audit cursor, and unique event IDs.
+  Run workers mutate state only with the current secret lease ID and fencing
+  token; PostgreSQL time defines expiry, and general run reads redact those
+  credentials. Expired or stale workers cannot commit results.
+- Append-only triggers and immutable registry rows are effective only when the
+  runtime database roles cannot alter their schema. The checked-in reference
+  auto-migrates for development; a production overlay must run migrations with
+  a separate credential, then use distinct control-plane and agent-server roles
+  with no DDL or schema ownership, as described in `infra/kubernetes/README.md`.
+- Control-plane state, artifact, and audit bookkeeping events enter a durable
+  outbox in the same database transaction as the mutation. Publishing is
+  idempotent by event ID and acknowledgement happens only after the canonical
+  session store accepts the event.
+- Task rows store a validated manifest snapshot and digest, and an admission
+  key cannot be reused for different bytes. Keeping reviewed dogfooded task
+  definitions in Git is an organizational/admission-gateway invariant; the
+  control-plane API does not independently prove Git provenance.
+- Artifacts are content-addressed and checksum-verified before immutable
+  metadata is registered; Postgres rejects registry updates/deletes, and an S3
+  conditional-conflict retry hashes the existing bytes instead of trusting
+  custom metadata. The signing secret stays at the service boundary. SigV4
+  URLs necessarily contain an access-key identifier and may contain a session
+  token, so the full URL is a short-lived bearer capability; it is never stored
+  in events, reports, logs, or the registry.
+- Audit exports are automatically drained deterministic JSONL projections of
+  the already-redacted canonical event stream. Oversized pages are split before
+  commit. The checkpoint advances only after both object upload and registry
+  commit succeed, so retrying cannot skip evidence.
+- ACP restore accepts a last-seen sequence cursor and replays only committed
+  later events. Appends, heartbeat renewal, and normal closure require the
+  recorded owner and an unexpired lease. If the prior process died with an
+  active nonterminal session, restoration records an interrupted outcome and
+  closes it atomically. It never repeats an incomplete model request,
+  permission grant, or tool side effect; retry is a new reviewed run with a new
+  lease. External side effects still require provider idempotency keys or
+  operator reconciliation—the harness does not claim arbitrary exactly-once
+  execution.
+
+## Control-plane transport and authorization
+
+- Loopback is the default. A non-loopback control-plane listener requires its
+  bearer token and must sit behind a TLS-terminating gateway whose logs redact
+  `Authorization` and signed-URL query strings.
+- M4 has one control-plane bearer-token trust domain. That token authenticates
+  every non-health worker, operator, artifact, audit-export, and signed-URL
+  route; it is not role-based authorization. Do not distribute it to mutually
+  untrusted workers or tenants. A production gateway must constrain callers to
+  that trust domain until route-scoped service identities are implemented.
 
 ## Agent-server transport
 
@@ -108,7 +165,9 @@ store to a model-controlled container.
 - Only `pnpm` workspaces; `pnpm-lock.yaml` is committed;
   `--frozen-lockfile` in CI and in Docker.
 - No dynamic `require`/`import` of untrusted paths.
-- `npm audit` at publish time (M4); dependency review on any new dep.
+- Dependency changes require lockfile and provenance review. Automated registry
+  vulnerability auditing remains release-pipeline work; the deterministic task
+  lane itself has network access denied.
 
 ## Reporting
 
@@ -122,6 +181,9 @@ disclose findings.
 - ~~Egress/exec rule compilation and sandbox enforcement (M3)~~ — shipped.
   `compileRules()` decides; sandbox-runner enforces. Network subject maps that
   Docker cannot represent are typed failures, never implicit bridge access.
-- Replay-safe session restore when an agent dies mid-turn (M4).
+- ~~Replay-safe session restore when an agent dies mid-turn (M4)~~ — shipped as
+  cursor-based committed-event replay with fail-closed interrupted-turn
+  reconciliation. Arbitrary tool execution is deliberately not claimed to be
+  exactly-once.
 - ~~Redaction pass before agent-server crosses a process boundary (M3)~~ —
   shipped in `@harness/events` and applied by agent-server.

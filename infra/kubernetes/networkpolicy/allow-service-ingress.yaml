@@ -1,0 +1,43 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-agent-server-ingress
+  namespace: harness
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agent-server
+      app.kubernetes.io/part-of: harness
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              harness.dev/acp-ingress: "true"
+          podSelector:
+            matchLabels:
+              harness.dev/acp-gateway: "true"
+      ports:
+        - { port: 8765, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-control-plane-ingress
+  namespace: harness
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: control-plane
+      app.kubernetes.io/part-of: harness
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              harness.dev/control-plane-ingress: "true"
+          podSelector:
+            matchLabels:
+              harness.dev/control-plane-gateway: "true"
+      ports:
+        - { port: 8080, protocol: TCP }

@@ -67,10 +67,10 @@ export function redactValue(
 }
 
 /** Return a schema-valid, non-mutating redacted copy of a harness event. */
-export function redactEvent(event: AnyHarnessEvent): AnyHarnessEvent {
+export function redactEvent<T extends AnyHarnessEvent>(event: T): T {
   const candidate = {
     ...event,
     data: redactValue(event.data),
   };
-  return deserializeEvent(serializeEvent(candidate));
+  return deserializeEvent(serializeEvent(candidate)) as T;
 }

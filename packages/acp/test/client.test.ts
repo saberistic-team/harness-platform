@@ -114,6 +114,31 @@ describe("AcpClient", () => {
     client.close();
   });
 
+  it("requests bounded session replay from an explicit cursor", async () => {
+    const socket = new FakeSocket();
+    const client = await AcpClient.connect("ws://test", { webSocketFactory: () => socket });
+    const pending = client.restoreSession({ sessionId: "s1", afterSeq: 7, limit: 32 });
+    const request = JSON.parse(socket.sent[0]!) as { id: string; method: string; params: unknown };
+    expect(request).toMatchObject({
+      method: "session/restore",
+      params: { sessionId: "s1", afterSeq: 7, limit: 32 },
+    });
+    socket.receive({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: {
+        sessionId: "s1",
+        status: "completed",
+        replayedFromSeq: 8,
+        replayedThroughSeq: 10,
+        replayedEvents: 3,
+        hasMore: false,
+      },
+    });
+    await expect(pending).resolves.toMatchObject({ replayedEvents: 3, hasMore: false });
+    client.close();
+  });
+
   it("closes an in-flight socket when connection setup is canceled", async () => {
     const socket = new FakeSocket(false);
     const abort = new AbortController();

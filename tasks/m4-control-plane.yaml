@@ -1,0 +1,89 @@
+id: m4-control-plane
+title: "M4 control plane, durable storage, and scale"
+goal: >
+  Complete ROADMAP M4 as one production-shaped control-plane path: schedule
+  immutable task-manifest snapshots, persist task/run/session state and the
+  append-only event stream in Postgres, register artifacts in S3-compatible
+  object storage, export redacted audit event segments with signed download
+  URLs, define the Kubernetes service topology, and resume sessions by
+  replaying durable events without repeating an interrupted model or tool turn.
+
+acceptance:
+  - the control plane admits validated task manifests idempotently, leases
+    queued runs with fencing tokens, records legal task state transitions, and
+    safely requeues expired leases without allowing stale workers to commit
+  - Postgres-backed session and event storage validates every harness event on
+    write and read, appends with per-session monotonic sequence numbers, and
+    never updates or deletes event rows
+  - the artifact registry writes content-addressed objects through an
+    S3-compatible API, stores immutable metadata, and issues bounded signed
+    download URLs as bearer capabilities without exposing the signing secret
+  - audit export filters the canonical redacted event stream, writes
+    deterministic newline-delimited JSON segments to object storage, and
+    advances its checkpoint only after the object and registry entry succeed
+  - the kernel awaits durable event publication before crossing model and tool
+    side-effect boundaries, so persistence failure stops execution fail-closed
+  - ACP advertises session replay, restores a durable session from an explicit
+    sequence cursor, provides at-least-once delivery of committed later events,
+    and marks an interrupted in-flight turn failed rather than executing it again
+  - production Kubernetes manifests provide the control plane, agent server,
+    Postgres, S3-compatible object storage, default-deny networking, service
+    accounts, health checks, persistent volumes, and bounded resources
+  - production secret values are referenced from Kubernetes Secrets and are
+    absent from committed manifests, events, and logs; signed URL query strings
+    are short-lived bearer capabilities and are never persisted or logged
+  - new scheduling, artifact, audit, and restore event types round-trip through
+    the typed event schema and are documented in EVENTS.md
+  - all default tests remain deterministic and offline; Postgres and S3
+    integration boundaries are exercised through injected protocol fakes
+  - pnpm test and pnpm typecheck are green
+
+allowed_paths:
+  - packages/acp/**
+  - packages/events/**
+  - packages/kernel/**
+  - packages/sessions/**
+  - services/agent-server/**
+  - services/control-plane/**
+  - infra/docker/**
+  - infra/kubernetes/**
+  - AGENTS.md
+  - ARCHITECTURE.md
+  - EVENTS.md
+  - README.md
+  - ROADMAP.md
+  - SECURITY.md
+  - package.json
+  - pnpm-lock.yaml
+  - tasks/**
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test": allow
+    "pnpm typecheck": allow
+    "pnpm install --offline --ignore-scripts --frozen-lockfile": allow
+    "pnpm harness validate tasks/m4-control-plane.yaml": allow
+    "pnpm harness run tasks/m4-control-plane.yaml": allow
+    "pnpm --filter @harness/events test": allow
+    "pnpm --filter @harness/kernel test": allow
+    "pnpm --filter @harness/sessions test": allow
+    "pnpm --filter @harness/acp test": allow
+    "pnpm --filter @harness/agent-server test": allow
+    "pnpm --filter @harness/control-plane test": allow
+    "kubectl kustomize infra/kubernetes": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git diff*": allow
+    "git log*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 160000
+  max_tool_calls: 260
+
+delivery:
+  type: pull_request

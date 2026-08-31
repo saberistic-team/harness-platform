@@ -1,6 +1,18 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  NativePostgresPool,
+  type PostgresParameter,
+  type PostgresPool,
+  type PostgresQueryable,
+} from "@harness/control-plane";
+import {
+  migratePostgresSessions,
+  PostgresSessionStore,
+  type Queryable,
+  type TransactionRunner,
+} from "@harness/sessions";
+import {
   agentServerConfigFromEnvironment,
   modelRegistryFromEnvironment,
 } from "./config";
@@ -19,6 +31,12 @@ Defaults:
 Provider configuration is read only from HARNESS_MODEL_ID,
 HARNESS_MODEL_BASE_URL, and server-side OPENAI_API_KEY.
 
+Durable sessions:
+  HARNESS_DATABASE_URL (or DATABASE_URL) enables the shared Postgres session
+  and event store. The service migrates it before opening the listener.
+  HARNESS_AGENT_READINESS_PATH optionally requires a deployment-staged path
+  (for example /workspace/tasks) before /health/ready succeeds.
+
 Remote transport:
   HARNESS_AGENT_TOKEN is required for a non-loopback --host.
   HARNESS_AGENT_ALLOW_PLAINTEXT_REMOTE=true is also required because this
@@ -28,6 +46,48 @@ Sandbox configuration:
   HARNESS_SANDBOX_IMAGE enables sandbox_exec. Optional settings are
   HARNESS_SANDBOX_TRUST_LOCAL_IMAGE=true|false, HARNESS_DOCKER_HOST, and
   HARNESS_DOCKER_BINARY. Any sandbox setting requires HARNESS_SANDBOX_IMAGE.`;
+
+function postgresParameter(value: unknown): PostgresParameter {
+  if (
+    value === null || typeof value === "string" || typeof value === "number" ||
+    typeof value === "boolean" || value instanceof Date || value instanceof Uint8Array
+  ) return value;
+  throw new Error("unsupported PostgreSQL parameter value");
+}
+
+function queryAdapter(queryable: PostgresQueryable): Queryable {
+  return {
+    query<Row extends Record<string, unknown>>(text: string, values: readonly unknown[] = []) {
+      return queryable.query<Row>(text, values.map(postgresParameter));
+    },
+  };
+}
+
+function transactionAdapter(pool: PostgresPool): TransactionRunner {
+  return {
+    async run<T>(operation: (transaction: Queryable) => Promise<T>): Promise<T> {
+      const client = await pool.connect();
+      let releaseError: unknown;
+      try {
+        await client.query("BEGIN");
+        const result = await operation(queryAdapter(client));
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackError) {
+          // Preserve the operation failure, but evict a connection that could
+          // not be returned to a clean transaction state.
+          releaseError = rollbackError;
+        }
+        throw error;
+      } finally {
+        client.release(releaseError);
+      }
+    },
+  };
+}
 
 export async function main(argv: string[]): Promise<number> {
   let root = process.cwd();
@@ -53,13 +113,31 @@ export async function main(argv: string[]): Promise<number> {
   }
   const registry = modelRegistryFromEnvironment();
   const environment = agentServerConfigFromEnvironment();
-  const server = await startAgentServer({
-    ...registry,
-    ...environment,
-    workspaceRoot: resolve(root),
-    host,
-    port,
-  });
+  const { databaseUrl, ...serverEnvironment } = environment;
+  let postgresPool: NativePostgresPool | undefined;
+  let sessionStore: PostgresSessionStore | undefined;
+  let server: Awaited<ReturnType<typeof startAgentServer>>;
+  try {
+    if (databaseUrl) {
+      postgresPool = new NativePostgresPool({ connectionString: databaseUrl });
+      const queryable = queryAdapter(postgresPool);
+      const transactions = transactionAdapter(postgresPool);
+      await migratePostgresSessions(queryable, transactions);
+      sessionStore = new PostgresSessionStore({ queryable, transactions });
+    }
+    server = await startAgentServer({
+      ...registry,
+      ...serverEnvironment,
+      ...(sessionStore ? { sessionStore } : {}),
+      workspaceRoot: resolve(root),
+      host,
+      port,
+    });
+  } catch (error) {
+    sessionStore?.close();
+    await postgresPool?.close();
+    throw error;
+  }
   console.log(`harness-agent-server: ${server.url}`);
   let stopping = false;
   let requestStop!: () => void;
@@ -79,6 +157,8 @@ export async function main(argv: string[]): Promise<number> {
   } finally {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
+    sessionStore?.close();
+    await postgresPool?.close();
   }
   return 0;
 }

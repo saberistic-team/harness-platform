@@ -30,8 +30,8 @@ export interface AgentSandboxToolContext {
   options: AgentSandboxOptions;
   nextRunId(): string;
   resolvePermission(decision: Decision, callId: string): Promise<"allow" | "deny">;
-  onDecision(outcome: EnforcedDecision): void;
-  onEvent(event: AnyHarnessEvent): void;
+  onDecision(outcome: EnforcedDecision): void | Promise<void>;
+  onEvent(event: AnyHarnessEvent): void | Promise<void>;
 }
 
 const sandboxExecParameters = z.object({
