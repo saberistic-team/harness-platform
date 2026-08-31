@@ -139,6 +139,39 @@ runtime requires:
 2. a task manifest justifying the change,
 3. review against `AGENTS.md`.
 
+### M5 decision — retain TypeScript/Node
+
+The M5 review found no qualifying M3–M4 profile, so the condition for a
+second runtime was not met. The M3 provider and sandbox boundaries are tested
+with injected HTTP and process executors, and the M4 Postgres and object-store
+boundaries are tested with injected protocol fakes. Those tests establish
+correctness while remaining offline; they do not measure production service
+latency or attribute CPU time to a runtime bottleneck. Available exit-gate
+durations likewise measure the whole test command, not an M3 or M4 component.
+
+No repository-backed M3–M4 evidence defines a representative workload or SLO,
+reports repeated latency percentiles or throughput, attributes CPU or memory
+samples to a hot path, or compares runtimes. Absence of that evidence is not a
+claim that Node is optimal; it means there is no measured basis for accepting
+the operational and supply-chain cost of another runtime. L1–L4 therefore
+remain TypeScript on Node ≥ 22, and M5 adds no runtime or service boundary.
+
+Reopening this decision requires a new task manifest and a written,
+reproducible profile that:
+
+1. names the production-representative workload, environment, repetitions,
+   target or SLO, and baseline,
+2. reports relevant latency percentiles or throughput together with CPU and
+   memory evidence that attributes the limiting hot path,
+3. shows why I/O, an external dependency, data structure, or algorithm is not
+   the actual constraint and records the Node-side remedies attempted, and
+4. demonstrates that a specific second-runtime boundary materially improves
+   the target after build, deployment, security, observability, and ownership
+   costs are included.
+
+That follow-up is reviewed against `AGENTS.md`; a reference implementation or
+language preference alone remains insufficient evidence.
+
 ## 6. Failure model
 
 - Kernel: budget exceeded → `budget_exceeded` stop + event trail (never
