@@ -1,0 +1,61 @@
+id: m2-mcp-stdio
+title: "MCP live stdio client and network-gated reference-server check"
+goal: >
+  Complete ROADMAP M2's protocol work with a live stdio MCP client.
+  The client owns subprocess lifecycle, the initialize/initialized
+  handshake, JSON-RPC request correlation, tools/list, tools/call,
+  ping, timeouts, and typed failures. Deterministic fixture tests run
+  offline in the default lane. A separate scheduled/manual workflow
+  exercises the initialize-era client against one exactly pinned and
+  integrity-locked official reference server without adding network
+  access to pull-request CI or this task's exit gate.
+
+acceptance:
+  - McpStdioClient starts a subprocess, negotiates a supported MCP
+    version, lists tools, invokes tools, pings, and closes idempotently
+  - fragmented and coalesced newline-delimited JSON-RPC frames are
+    handled correctly and server notifications do not corrupt requests
+  - spawn failures, premature exits, request timeouts, malformed frames,
+    unsupported protocol versions, closed clients, and JSON-RPC errors
+    surface as typed McpClientError values
+  - offline fixture tests cover the handshake, tool discovery, successful
+    and failed tool calls, timeout recovery, malformed output, and crash
+  - a scheduled/manual workflow runs a live smoke test against exactly
+    pinned @modelcontextprotocol/server-everything@2026.8.18 from a
+    dedicated frozen lockfile with lifecycle scripts disabled
+  - the live workflow never runs in the default pull-request or push lane
+  - pnpm test and pnpm typecheck are green offline
+
+allowed_paths:
+  - packages/mcp/**
+  - .github/workflows/mcp-live.yaml
+  - AGENTS.md
+  - README.md
+  - ROADMAP.md
+  - tasks/**
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test": allow
+    "pnpm typecheck": allow
+    "pnpm evals": allow
+    "pnpm harness validate tasks/m2-mcp-stdio.yaml": allow
+    "pnpm harness run tasks/m2-mcp-stdio.yaml": allow
+    "pnpm --filter @harness/mcp test": allow
+    "node --test*": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git diff*": allow
+    "git log*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request

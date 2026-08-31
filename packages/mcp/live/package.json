@@ -1,0 +1,10 @@
+{
+  "name": "@harness/mcp-live-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Lockfile-isolated dependency graph for the network-gated MCP compatibility check.",
+  "packageManager": "pnpm@10.34.5",
+  "dependencies": {
+    "@modelcontextprotocol/server-everything": "2026.8.18"
+  }
+}

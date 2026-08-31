@@ -1,0 +1,59 @@
+# Network-gated MCP compatibility check. This workflow is intentionally
+# separate from ci.yaml so pull requests and pushes stay offline by default.
+
+name: mcp live stdio
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+concurrency:
+  group: mcp-live-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  reference-server:
+    name: pinned Everything reference server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm (pinned)
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.34.5
+
+      - name: Setup Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+
+      - name: Fetch locked workspace graph
+        run: pnpm fetch --frozen-lockfile
+
+      - name: Install workspace offline
+        run: pnpm install --offline --frozen-lockfile --ignore-scripts
+
+      - name: Fetch locked live-fixture graph
+        run: >-
+          pnpm --dir packages/mcp/live fetch
+          --ignore-workspace --frozen-lockfile
+
+      - name: Install live fixture offline
+        run: >-
+          pnpm --dir packages/mcp/live install
+          --ignore-workspace --offline --frozen-lockfile --ignore-scripts
+
+      - name: Live stdio client against pinned reference server
+        run: pnpm --filter @harness/mcp test:live
+        env:
+          PNPM_CONFIG_OFFLINE: "true"
+          NPM_CONFIG_OFFLINE: "true"

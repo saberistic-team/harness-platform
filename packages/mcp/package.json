@@ -1,10 +1,15 @@
 {
   "name": "@harness/mcp",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Typed MCP wire shapes and a live stdio JSON-RPC client.",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --root ../.. packages/mcp/test/stdio-client.test.ts",
+    "test:live": "tsx test/live-stdio.ts"
   },
   "dependencies": {
     "zod": "^3.24.0"

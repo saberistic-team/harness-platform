@@ -31,10 +31,13 @@ pnpm harness run tasks/kernel-0001.yaml
 | `packages/policy`    | Pure policy engine (decides, never acts)                   |
 | `packages/sessions`  | Append-only session/event logs                             |
 | `packages/workspace` | Path scoping (escape-safe resolution)                      |
-| `packages/mcp`       | MCP wire-shape types                                       |
+| `packages/mcp`       | MCP wire shapes + initialize-era stdio client             |
 | `packages/acp`       | Agent Client Protocol types                                |
+| `packages/otel`      | Event stream → OpenTelemetry spans and metrics             |
 | `packages/sdk`       | Task manifest (input) + run report (output) contracts      |
 | `apps/cli`           | Exit-gate CLI: `harness validate` \| `harness run`         |
+| `apps/tui`           | Read-only session and run-report viewer                    |
+| `apps/web`           | Read-only task board                                       |
 | `tasks/`             | Task manifests + run reports (evidence)                    |
 | `evals/`             | Golden repos + scenarios                                   |
 | `skills/`            | Agent skills for operating this platform                   |
@@ -44,7 +47,7 @@ pnpm harness run tasks/kernel-0001.yaml
 - [`AGENTS.md`](AGENTS.md) — rules of engagement (read this first)
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — the package contract
 - [`EVENTS.md`](EVENTS.md) — the event stream reference
-- [`ROADMAP.md`](ROADMAP.md) — milestones (M0 ✅)
+- [`ROADMAP.md`](ROADMAP.md) — milestones (M0–M2 ✅)
 - [`SECURITY.md`](SECURITY.md) — sandbox and boundary model
 
 ## Definition of done
@@ -60,5 +63,5 @@ Every task, no exceptions:
 
 ## Status
 
-M0 foundation complete. See [ROADMAP](ROADMAP.md) for the operator
-loop (M1) and what comes next.
+M0–M2 are complete: foundation, operator loop, and eval credibility.
+See [ROADMAP](ROADMAP.md) for the services milestone (M3) and what follows.

@@ -28,13 +28,22 @@
 - `SECURITY.md` open question: exec egress pattern → rule compiler
   → `tasks/m1-exec-rules` (`compileRules()` in `@harness/policy`)
 
-## M2 — Eval credibility
+## M2 — Eval credibility  ✅ (branch chain `tasks/m2-*`)
 - `evals/golden-repositories/hello-service` — first calibration target
+  → `tasks/m2-golden-hello-service`
 - Scenario DSL validation in `@harness/sdk` (YAML → invariants)
+  → `tasks/m2-scenario-dsl`
 - `apps/web`: minimal task board (manifests + reports, no real-time)
+  → `tasks/m2-web-task-board`
 - OpenTelemetry wiring end-to-end (kernel → CLI → local collector)
-- `packages/mcp`: live stdio client, 1 third-party server in CI
-  (network-gated job, not in the default lane)
+  → `tasks/m2-otel`
+- `packages/mcp`: initialize-era live stdio client, with one locked official
+  reference server in scheduled/manual CI (never the default lane)
+  → `tasks/m2-mcp-stdio`
+
+The M2 MCP adapter negotiates revisions through `2025-11-25`. The stateless
+discovery lifecycle introduced by MCP `2026-07-28` is a future compatibility
+adapter, not a silent behavior change to this client.
 
 ## M3 — Services
 - `services/agent-server`: ACP server over WS; one kernel run per session

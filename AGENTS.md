@@ -21,7 +21,7 @@ packages/tools       Tool interface + registry
 packages/policy      Pure policy engine (decides, never acts)
 packages/sessions    Append-only session/event logs (SQLite, node:sqlite)
 packages/workspace   Path scoping (escape-safe resolution)
-packages/mcp         MCP wire-shape types (client in M2)
+packages/mcp         MCP wire shapes + initialize-era stdio client (M2)
 packages/acp         Agent Client Protocol types (server in M3)
 packages/otel        Event stream -> OTel spans/metrics (M2; kernel/CLI -> collector)
 packages/sdk         Task manifest (input contract) + run report (output contract)
