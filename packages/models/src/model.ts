@@ -73,7 +73,14 @@ export interface Usage {
 
 export type FinishReason = "stop" | "tool_calls" | "length" | "error";
 
-export interface CompletionRequest {
+/**
+ * Provider-neutral input shared by streaming and completion-based models.
+ *
+ * The signal belongs to the caller: adapters must forward it unchanged so a
+ * runtime can cancel an in-flight provider request without provider-specific
+ * knowledge.
+ */
+export interface ModelRequest {
   messages: ChatMessage[];
   tools?: ToolDefinition[];
   model?: string;
@@ -85,12 +92,45 @@ export interface CompletionRequest {
   signal?: AbortSignal;
 }
 
+/**
+ * Compatibility name for the original completion-based model API.
+ *
+ * Keeping this as an interface preserves existing imports and leaves room for
+ * completion-only additions without making them part of ModelAdapter.
+ */
+export interface CompletionRequest extends ModelRequest {}
+
 export interface CompletionResponse {
   id: string;
   content: string;
   toolCalls: ToolCall[];
   usage: Usage;
   finishReason: FinishReason;
+}
+
+/** An incremental assistant-text fragment, in provider delivery order. */
+export interface ModelTextDeltaEvent {
+  type: "text.delta";
+  delta: string;
+}
+
+/**
+ * The terminal event of every successful model stream.
+ *
+ * Tool calls remain part of the completed provider-neutral response in M6;
+ * later kernel milestones may add incremental tool-call events when needed.
+ */
+export interface ModelResponseCompletedEvent {
+  type: "response.completed";
+  response: CompletionResponse;
+}
+
+/** Strict model-stream vocabulary supported by the minimal kernel. */
+export type ModelEvent = ModelTextDeltaEvent | ModelResponseCompletedEvent;
+
+/** Async streaming model boundary owned by the minimal kernel. */
+export interface ModelAdapter {
+  stream(request: ModelRequest): AsyncIterable<ModelEvent>;
 }
 
 export interface Model {
