@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: harness-postgres
+  namespace: harness
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: harness
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: harness
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+      protocol: TCP

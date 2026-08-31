@@ -65,12 +65,24 @@ supported deployment shape is a TLS reverse proxy with clients using `wss://`.
 Sandbox images are immutable digest references unless a reviewed local image is
 explicitly trusted for development.
 
-## M4 — Control plane & scale
-- `services/control-plane`: scheduling, task state, artifact registry
-- Postgres for sessions/events; S3 (or MinIO in production) for artifacts
-- Audit log exported from the event stream to object storage; signed URLs
-- `infra/kubernetes/` manifests replace compose for the service mesh
-- Replay-safe session restore (see SECURITY.md open questions)
+## M4 — Control plane & scale  ✅ (`tasks/m4-control-plane`)
+- `services/control-plane`: idempotent task admission, fenced scheduling,
+  operator cancellation/reconciliation, transactional event outbox, and
+  immutable artifact registry
+- Postgres for shared sessions/events and task/run state; S3-compatible object
+  storage (MinIO in the reference deployment) for content-addressed artifacts
+- Automatic redacted audit export from the commit-ordered event stream to
+  deterministic JSONL objects; bounded signed download URLs
+- `infra/kubernetes/` is the production service topology, with default-deny
+  networking, persistent reference stores, health checks, and resource bounds;
+  Docker Compose remains a local-development aid
+- Cursor-based, lease-fenced ACP restore replays only committed events and
+  records an interrupted outcome without repeating an uncertain model/tool turn
+
+The Kubernetes sandbox Job is a suspended deployment contract in M4. The base
+does not grant Kubernetes API credentials or materialize Jobs; a future executor
+overlay must add that privilege together with workspace staging and policy-safe
+template substitution.
 
 ## M5 — Polyglot review (conditional)
 - Only if M3–M4 profiling produces a hard, measured reason do we add a

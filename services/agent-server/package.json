@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@harness/acp": "workspace:*",
+    "@harness/control-plane": "workspace:*",
     "@harness/events": "workspace:*",
     "@harness/kernel": "workspace:*",
     "@harness/models": "workspace:*",
@@ -20,10 +21,10 @@
     "@harness/sessions": "workspace:*",
     "@harness/tools": "workspace:*",
     "@harness/workspace": "workspace:*",
+    "tsx": "^4.19.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "tsx": "^4.19.0"
+    "@types/node": "^22.10.0"
   }
 }

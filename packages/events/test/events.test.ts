@@ -24,6 +24,7 @@ function samples(): Array<{ type: EventType; event: AnyHarnessEvent }> {
   const opts = { eventId: FIXED_ID, at: FIXED_AT, actor: "system" };
   return [
     { type: "session.created", event: createEvent("session.created", { sessionId: "sess-1", workspace: "ws-1" }, opts) },
+    { type: "session.restored", event: createEvent("session.restored", { sessionId: "sess-1", afterSeq: 3, availableThroughSeq: 8, availableEvents: 5, outcome: "completed" }, opts) },
     { type: "agent.started", event: createEvent("agent.started", { agentId: "ag-1", sessionId: "sess-1", taskId: "kernel-0001", model: "fake-model/v1" }, opts) },
     { type: "agent.stopped", event: createEvent("agent.stopped", { agentId: "ag-1", status: "completed", steps: 3, toolCalls: 1 }, opts) },
     { type: "model.request", event: createEvent("model.request", { requestId: "req-1", model: "fake-model/v1", messageCount: 2 }, opts) },
@@ -41,6 +42,11 @@ function samples(): Array<{ type: EventType; event: AnyHarnessEvent }> {
     { type: "sandbox.started", event: createEvent("sandbox.started", { runId: "run-1", containerName: "ctr-1", image: "harness-sandbox:local", network: "none", mounts: 2 }, opts) },
     { type: "sandbox.stopped", event: createEvent("sandbox.stopped", { runId: "run-1", containerName: "ctr-1", status: "completed", exitCode: 0, durationMs: 12 }, opts) },
     { type: "run.recorded", event: createEvent("run.recorded", { runId: "run-1", taskId: "kernel-0001", status: "passed", reportPath: "tasks/runs/report.json" }, opts) },
+    { type: "run.scheduled", event: createEvent("run.scheduled", { runId: "run-1", taskId: "kernel-0001", attempt: 1, manifestDigest: "sha256:manifest" }, opts) },
+    { type: "run.leased", event: createEvent("run.leased", { runId: "run-1", taskId: "kernel-0001", workerId: "worker-1", fencingToken: 1, expiresAt: "2026-01-02T03:05:05.000Z" }, opts) },
+    { type: "run.updated", event: createEvent("run.updated", { runId: "run-1", taskId: "kernel-0001", change: "completed", status: "passed", previousStatus: "running", version: 5, attempt: 1, fencingToken: 1, reportPath: "tasks/runs/report.json" }, opts) },
+    { type: "artifact.registered", event: createEvent("artifact.registered", { artifactId: "artifact-1", kind: "audit", bucket: "harness", key: "audit/task/run.jsonl", sha256: "a".repeat(64), bytes: 42, contentType: "application/x-ndjson", taskId: "kernel-0001", runId: "run-1", sessionId: "sess-1" }, opts) },
+    { type: "audit.exported", event: createEvent("audit.exported", { exportId: "export-1", artifactId: "artifact-1", fromSeq: 0, toSeq: 9, eventCount: 10, sha256: "a".repeat(64) }, opts) },
     { type: "error", event: createEvent("error", { code: "MODEL_TIMEOUT", message: "timed out after 30s", retryable: true }, opts) },
   ];
 }
@@ -70,6 +76,26 @@ describe("event round-trip", () => {
     for (const { type, event } of samples()) {
       expect(eventSchemas[type].safeParse(event).success).toBe(true);
     }
+  });
+
+  it("rejects semantically impossible run.updated transitions", () => {
+    const invalid = {
+      v: 1,
+      type: "run.updated",
+      eventId: FIXED_ID,
+      at: FIXED_AT,
+      data: {
+        runId: "run-1",
+        taskId: "task-1",
+        change: "started",
+        previousStatus: "leased",
+        status: "queued",
+        version: 2,
+        attempt: 1,
+        fencingToken: 1,
+      },
+    };
+    expect(eventSchemas["run.updated"].safeParse(invalid).success).toBe(false);
   });
 });
 
@@ -193,6 +219,30 @@ describe("deserialization gates", () => {
     expect(issues.map((i) => i.path)).toEqual(
       expect.arrayContaining(["data.finishReason", "data.usage.promptTokens"]),
     );
+  });
+
+  it("rejects non-timestamp envelope and lease dates", () => {
+    const invalidEnvelope = {
+      ...samples()[0]!.event,
+      at: "eventually",
+    };
+    expect(() => deserializeEvent(serializeEvent(invalidEnvelope))).toThrow(EventSchemaError);
+
+    const leaseSample = samples().find((sample) => sample.type === "run.leased")!.event;
+    const invalidLease = {
+      ...leaseSample,
+      data: { ...(leaseSample.data as Record<string, unknown>), expiresAt: "later" },
+    };
+    expect(() => deserializeEvent(serializeEvent(invalidLease))).toThrow(EventSchemaError);
+  });
+
+  it("rejects unknown envelope and data fields instead of stripping them", () => {
+    const sample = samples()[0]!.event;
+    expect(() => deserializeEvent({ ...sample, surprise: true })).toThrow(EventSchemaError);
+    expect(() => deserializeEvent({
+      ...sample,
+      data: { ...sample.data, surprise: true },
+    })).toThrow(EventSchemaError);
   });
 
   it("rejects non-object frames with EventParseError", () => {

@@ -29,7 +29,7 @@ pnpm harness run tasks/kernel-0001.yaml
 | `packages/models`    | Model protocol, `FakeModel`, OpenAI-compatible adapter      |
 | `packages/tools`     | Tool interface + registry                                  |
 | `packages/policy`    | Pure policy engine (decides, never acts)                   |
-| `packages/sessions`  | Append-only session/event logs                             |
+| `packages/sessions`  | Append-only SQLite/Postgres session and event stores       |
 | `packages/workspace` | Path scoping (escape-safe resolution)                      |
 | `packages/mcp`       | MCP wire shapes + initialize-era stdio client             |
 | `packages/acp`       | Agent Client Protocol types                                |
@@ -39,7 +39,9 @@ pnpm harness run tasks/kernel-0001.yaml
 | `apps/tui`           | Session viewer + interactive ACP permission client         |
 | `apps/web`           | Read-only task board                                       |
 | `services/agent-server` | ACP JSON-RPC over WebSocket; one run per session       |
+| `services/control-plane` | Fenced scheduler, task state, artifacts, audit export  |
 | `services/sandbox-runner` | Hardened Docker-per-run execution boundary          |
+| `infra/kubernetes`   | Production service topology and sandbox Job contract       |
 | `tasks/`             | Task manifests + run reports (evidence)                    |
 | `evals/`             | Golden repos + scenarios                                   |
 | `skills/`            | Agent skills for operating this platform                   |
@@ -49,7 +51,7 @@ pnpm harness run tasks/kernel-0001.yaml
 - [`AGENTS.md`](AGENTS.md) — rules of engagement (read this first)
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — the package contract
 - [`EVENTS.md`](EVENTS.md) — the event stream reference
-- [`ROADMAP.md`](ROADMAP.md) — milestones (M0–M3 ✅)
+- [`ROADMAP.md`](ROADMAP.md) — milestones (M0–M4 ✅)
 - [`SECURITY.md`](SECURITY.md) — sandbox and boundary model
 
 ## Definition of done
@@ -92,8 +94,37 @@ encrypt traffic: put the listener behind a TLS reverse proxy, connect through
 `wss://`, and configure the proxy not to log query strings. The TUI reads the
 same token from its environment.
 
+## M4 control-plane loop
+
+For explicit offline development, start the control plane with its in-memory
+repository and object store:
+
+```bash
+HARNESS_CONTROL_PLANE_IN_MEMORY=true \
+  node services/control-plane/bin/control-plane.js --host 127.0.0.1 --port 8780
+```
+
+Production mode requires `HARNESS_DATABASE_URL` (or `DATABASE_URL`) plus the
+`HARNESS_ARTIFACT_*` endpoint, bucket, region, and credentials. Postgres is the
+shared source for sessions, events, tasks, runs, leases, and the transactional
+event outbox. Object bytes live in S3-compatible storage; signed URLs are
+generated on demand and never persisted. Point agent-server at the same
+database to enable cross-replica ACP restore, but use a distinct least-privilege
+runtime role and therefore a distinct credential-bearing URL in production.
+
+Render the production reference topology without contacting a cluster:
+
+```bash
+kubectl kustomize infra/kubernetes
+```
+
+The checked-in Kubernetes base deliberately contains invalid image, secret,
+and storage-class placeholders. Follow
+[`infra/kubernetes/README.md`](infra/kubernetes/README.md) to build a reviewed
+environment overlay; do not apply the base directly.
+
 ## Status
 
-M0–M3 are complete: foundation, operator loop, eval credibility, and the
-permissioned service boundary. See [ROADMAP](ROADMAP.md) for the M4 control
-plane and scale milestone.
+M0–M4 are complete: foundation, operator loop, eval credibility, the
+permissioned service boundary, and the durable control plane. See
+[ROADMAP](ROADMAP.md) for the conditional M5 polyglot review.

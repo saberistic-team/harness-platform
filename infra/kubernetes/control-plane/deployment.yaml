@@ -1,0 +1,130 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harness-control-plane
+  namespace: harness
+  labels:
+    app.kubernetes.io/name: control-plane
+    app.kubernetes.io/component: scheduler
+    app.kubernetes.io/part-of: harness
+  annotations:
+    harness.dev/replace-before-apply: "replace the example.invalid image with a reviewed application digest"
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: control-plane
+      app.kubernetes.io/part-of: harness
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: control-plane
+        app.kubernetes.io/component: scheduler
+        app.kubernetes.io/part-of: harness
+    spec:
+      serviceAccountName: harness-control-plane
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          minDomains: 2
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: control-plane
+              app.kubernetes.io/part-of: harness
+      containers:
+        - name: control-plane
+          image: example.invalid/harness/control-plane:REPLACE_VERSION@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          args: ["--host", "0.0.0.0", "--port", "8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: HARNESS_CONTROL_PLANE_PORT
+              value: "8080"
+            - name: HARNESS_CONTROL_PLANE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harness-control-plane-secrets
+                  key: HARNESS_CONTROL_PLANE_TOKEN
+            - name: HARNESS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: harness-control-plane-secrets
+                  key: HARNESS_DATABASE_URL
+            - name: HARNESS_ARTIFACT_ENDPOINT
+              value: http://harness-minio:9000
+            - name: HARNESS_ARTIFACT_BUCKET
+              value: harness
+            - name: HARNESS_ARTIFACT_REGION
+              value: us-east-1
+            - name: HARNESS_ARTIFACT_FORCE_PATH_STYLE
+              value: "true"
+            - name: HARNESS_ARTIFACT_ALLOW_HTTP
+              value: "true"
+            - name: HARNESS_ARTIFACT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harness-control-plane-secrets
+                  key: HARNESS_ARTIFACT_ACCESS_KEY
+            - name: HARNESS_ARTIFACT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harness-control-plane-secrets
+                  key: HARNESS_ARTIFACT_SECRET_KEY
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+              ephemeral-storage: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

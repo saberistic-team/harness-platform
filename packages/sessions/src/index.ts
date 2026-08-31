@@ -1,11 +1,20 @@
 import { randomUUID } from "node:crypto";
 import type { AnyHarnessEvent } from "@harness/events";
+import {
+  eventPageBounds,
+  type EventLog,
+  type EventPageOptions,
+  type SessionEventPage,
+  type SessionHandle,
+  type SessionRecord,
+  type SequencedEvent,
+} from "./store";
 
 /**
  * Sessions — the durable record of one agent activity stream.
  *
- * M0 scope: in-memory append-only log over the harness event stream,
- * plus the shapes the persistent layer (SQLite/Postgres) will store.
+ * The in-memory implementation remains the offline baseline. SQLite and
+ * Postgres implement the common durable SessionStore contract.
  *
  * Rules:
  *  - A session is append-only; corrections are new events.
@@ -13,30 +22,38 @@ import type { AnyHarnessEvent } from "@harness/events";
  *    appends and never rewrites.
  */
 
-export type SessionStatus = "active" | "closed" | "archived";
-
-export interface SessionRecord {
-  sessionId: string;
-  taskId?: string;
-  status: SessionStatus;
-  createdAt: string;
-  closedAt?: string;
-}
-
-export interface EventLog {
-  /** Append an event; returns its sequence number (0-based). */
-  append(event: AnyHarnessEvent): Promise<number>;
-  /** Read a range [from, to) of stored events. */
-  slice(from: number, to?: number): Promise<AnyHarnessEvent[]>;
-  size(): Promise<number>;
-}
-
 export class InMemoryEventLog implements EventLog {
   private readonly events: AnyHarnessEvent[] = [];
+
+  constructor(private readonly sessionId = "in-memory") {}
 
   async append(event: AnyHarnessEvent): Promise<number> {
     this.events.push(event);
     return this.events.length - 1;
+  }
+
+  async appendSequenced(event: AnyHarnessEvent): Promise<SequencedEvent> {
+    const seq = await this.append(event);
+    return { sessionId: this.sessionId, seq, globalSeq: seq, event };
+  }
+
+  async read(options: EventPageOptions = {}): Promise<SessionEventPage> {
+    const { cursor, limit } = eventPageBounds(
+      options.afterSeq,
+      options.limit,
+      "afterSeq",
+    );
+    const candidates = this.events.slice(cursor + 1, cursor + 1 + limit + 1);
+    const hasMore = candidates.length > limit;
+    const pageEvents = candidates.slice(0, limit).map((event, index) => {
+      const seq = cursor + 1 + index;
+      return { sessionId: this.sessionId, seq, globalSeq: seq, event };
+    });
+    return {
+      events: pageEvents,
+      nextAfterSeq: pageEvents.at(-1)?.seq ?? cursor,
+      hasMore,
+    };
   }
 
   async slice(from: number, to = this.events.length): Promise<AnyHarnessEvent[]> {
@@ -48,23 +65,23 @@ export class InMemoryEventLog implements EventLog {
   }
 }
 
-export interface SessionHandle {
-  record: SessionRecord;
-  log: EventLog;
-}
-
+export * from "./store";
 export * from "./sqlite";
+export * from "./postgres";
 
 export function openSession(
   opts: { taskId?: string; createdAt?: string } = {},
 ): SessionHandle {
+  const sessionId = `sess-${randomUUID()}`;
+  const record: SessionRecord = {
+    sessionId,
+    taskId: opts.taskId,
+    status: "active",
+    createdAt: opts.createdAt ?? new Date().toISOString(),
+    metadata: {},
+  };
   return {
-    record: {
-      sessionId: `sess-${randomUUID()}`,
-      taskId: opts.taskId,
-      status: "active",
-      createdAt: opts.createdAt ?? new Date().toISOString(),
-    },
-    log: new InMemoryEventLog(),
+    record,
+    log: new InMemoryEventLog(sessionId),
   };
 }

@@ -6,10 +6,10 @@ export * from "./websocket";
 
 export interface AgentServerStatus {
   service: "agent-server";
-  version: "0.3.0";
+  version: "0.4.0";
   ready: true;
 }
 
 export function status(): AgentServerStatus {
-  return { service: "agent-server", version: "0.3.0", ready: true };
+  return { service: "agent-server", version: "0.4.0", ready: true };
 }

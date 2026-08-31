@@ -11,6 +11,7 @@ import {
   type AcpCancelSessionParams,
   type AcpInitializeParams,
   type AcpNewSessionParams,
+  type AcpRestoreSessionParams,
   type AcpPermissionResponseParams,
   type AcpPromptParams,
   type AcpRequest,
@@ -32,9 +33,11 @@ import { compileRules, type Decision } from "@harness/policy";
 import type { EnforcedDecision } from "@harness/sandbox-runner";
 import { loadTaskManifestFile, type TaskManifest } from "@harness/sdk";
 import {
-  openSqliteSession,
-  setSessionStatus,
-  type OpenedSession,
+  openSqliteStore,
+  SessionStoreError,
+  type EventLog,
+  type SessionMetadata,
+  type SessionStore,
 } from "@harness/sessions";
 import {
   ToolRegistry,
@@ -76,22 +79,28 @@ export interface AgentConnectionOptions {
   /** Enables the built-in Docker-backed `sandbox_exec` tool for task sessions. */
   sandbox?: AgentSandboxOptions;
   loadManifest?: (workspace: string, taskId: string) => Promise<TaskManifest>;
-  /** Central SQLite store. `false` disables persistence for embedded tests. */
+  /** Injected durable store (Postgres in production). `false` disables it. */
+  sessionStore?: SessionStore | false;
+  /** Local SQLite fallback. Ignored only when `sessionStore` is supplied. */
   sessionDbPath?: string | false;
   permissionTimeoutMs?: number;
   /** Hard resource cap for one WebSocket connection. */
   maxSessionsPerConnection?: number;
   /** Created sessions are closed if no prompt arrives within this window. */
   createdSessionTimeoutMs?: number;
+  /** Durable owner lease used to prevent another replica restoring live work. */
+  sessionLeaseMs?: number;
   run?: (options: RunOptions) => Promise<RunResult>;
   now?: () => string;
   newId?: (prefix: string) => string;
   agentName?: string;
   agentVersion?: string;
+  /** @internal Shared by all connections accepted by one server process. */
+  activeSessionIds?: Set<string>;
 }
 
 const DEFAULT_AGENT_NAME = "harness-agent-server";
-const DEFAULT_AGENT_VERSION = "0.3.0";
+const DEFAULT_AGENT_VERSION = "0.4.0";
 
 /** Validate the server identity and model registry against the ACP wire caps. */
 export function validateAgentAdvertisement(
@@ -114,7 +123,7 @@ export function validateAgentAdvertisement(
     protocolVersion: ACP_PROTOCOL_VERSION,
     agentName: options.agentName ?? DEFAULT_AGENT_NAME,
     agentVersion: options.agentVersion ?? DEFAULT_AGENT_VERSION,
-    capabilities: { streaming: true, permissioning: true, sessions: false },
+    capabilities: { streaming: true, permissioning: true, sessions: true },
     models: modelNames,
   });
   if (!advertisement.success) {
@@ -138,15 +147,16 @@ interface SessionState extends AgentSessionContext {
   model: Model;
   tools: ToolRegistry;
   eventCount: number;
-  appendQueue: Promise<void>;
   appendError?: unknown;
-  store?: OpenedSession;
+  log?: EventLog;
+  metadata: SessionMetadata;
   abort: AbortController;
   pending: Map<string, PendingPermission>;
   resolvedPermissions: Set<string>;
   runPermissionGrants: Set<string>;
   sandboxRuns: number;
   idleTimer?: ReturnType<typeof setTimeout>;
+  leaseTimer?: ReturnType<typeof setTimeout>;
 }
 
 function requestId(raw: string): AcpRequestId | null {
@@ -190,6 +200,23 @@ function canonicalProspectivePath(input: string): string {
       cursor = parent;
     }
   }
+}
+
+function workspaceIsInScope(root: string, value: unknown): value is string {
+  if (typeof value !== "string" || !isAbsolute(value)) return false;
+  try {
+    return pathIsWithin(root, canonicalProspectivePath(value));
+  } catch {
+    return false;
+  }
+}
+
+function addMilliseconds(iso: string, milliseconds: number): string {
+  const value = Date.parse(iso);
+  if (!Number.isFinite(value)) {
+    throw new Error("agent server clock must return an ISO-8601 timestamp");
+  }
+  return new Date(value + milliseconds).toISOString();
 }
 
 function operationalError(
@@ -264,15 +291,20 @@ export class AgentConnection {
   private readonly modelFactories: Map<string, () => Model>;
   private readonly modelNames: string[];
   private readonly defaultModel: string;
-  private readonly sessionDbPath: string | undefined;
+  private readonly sessionStore: SessionStore | undefined;
+  private readonly ownsSessionStore: boolean;
+  private readonly activeSessionIds: Set<string>;
   private readonly permissionTimeoutMs: number;
   private readonly maxSessionsPerConnection: number;
   private readonly createdSessionTimeoutMs: number;
+  private readonly sessionLeaseMs: number;
   private readonly run: (options: RunOptions) => Promise<RunResult>;
   private readonly now: () => string;
   private readonly newId: (prefix: string) => string;
+  private readonly connectionId: string;
   private initialized = false;
   private closed = false;
+  private persistenceClosed = false;
 
   constructor(
     private readonly send: (wire: string) => void,
@@ -286,7 +318,10 @@ export class AgentConnection {
     this.modelNames = [...this.modelFactories.keys()];
     this.defaultModel = options.defaultModel ?? this.modelNames[0]!;
     this.root = realpathSync(resolve(options.workspaceRoot ?? process.cwd()));
-    const configuredSessionDbPath = options.sessionDbPath === false
+    if (options.sessionStore !== undefined && options.sessionDbPath !== undefined) {
+      throw new Error("configure sessionStore or sessionDbPath, not both");
+    }
+    const configuredSessionDbPath = options.sessionStore !== undefined || options.sessionDbPath === false
       ? undefined
       : options.sessionDbPath
         ? resolve(options.sessionDbPath)
@@ -298,13 +333,13 @@ export class AgentConnection {
               "sessions.sqlite",
             )
           : join(this.root, "tasks", "runs", "agent-server.sqlite");
-    this.sessionDbPath = configuredSessionDbPath
+    const sessionDbPath = configuredSessionDbPath
       ? canonicalProspectivePath(configuredSessionDbPath)
       : undefined;
     if (
       options.sandbox &&
-      this.sessionDbPath &&
-      pathIsWithin(this.root, this.sessionDbPath)
+      sessionDbPath &&
+      pathIsWithin(this.root, sessionDbPath)
     ) {
       throw new Error(
         "sandbox-enabled agent-server sessionDbPath must be outside the workspace",
@@ -313,17 +348,26 @@ export class AgentConnection {
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? 120_000;
     this.maxSessionsPerConnection = options.maxSessionsPerConnection ?? 32;
     this.createdSessionTimeoutMs = options.createdSessionTimeoutMs ?? 5 * 60_000;
+    this.sessionLeaseMs = options.sessionLeaseMs ?? 30_000;
     if (
       !Number.isInteger(this.maxSessionsPerConnection) ||
       this.maxSessionsPerConnection <= 0 ||
       !Number.isFinite(this.createdSessionTimeoutMs) ||
-      this.createdSessionTimeoutMs <= 0
+      this.createdSessionTimeoutMs <= 0 ||
+      !Number.isFinite(this.sessionLeaseMs) ||
+      this.sessionLeaseMs < 1_000
     ) {
       throw new Error("agent server session limits must be positive");
     }
     this.run = options.run ?? runAgent;
     this.now = options.now ?? (() => new Date().toISOString());
     this.newId = options.newId ?? ((prefix) => `${prefix}-${randomUUID()}`);
+    this.connectionId = this.newId("connection");
+    this.activeSessionIds = options.activeSessionIds ?? new Set<string>();
+    this.sessionStore = options.sessionStore === false
+      ? undefined
+      : options.sessionStore ?? (sessionDbPath ? openSqliteStore(sessionDbPath) : undefined);
+    this.ownsSessionStore = options.sessionStore === undefined && sessionDbPath !== undefined;
   }
 
   receive(raw: string): void {
@@ -358,7 +402,7 @@ export class AgentConnection {
       session.abort.abort();
       if (session.state === "created") {
         session.state = "canceled";
-        this.finishSession(session);
+        this.track(this.finishSession(session));
       }
     }
   }
@@ -367,6 +411,10 @@ export class AgentConnection {
   async waitForIdle(): Promise<void> {
     while (this.inFlight.size > 0) {
       await Promise.allSettled([...this.inFlight]);
+    }
+    if (this.ownsSessionStore && !this.persistenceClosed) {
+      this.persistenceClosed = true;
+      await this.sessionStore?.close();
     }
   }
 
@@ -380,6 +428,8 @@ export class AgentConnection {
     switch (request.method) {
       case ACP_METHODS.newSession:
         return this.newSession(request.params as AcpNewSessionParams);
+      case ACP_METHODS.restoreSession:
+        return this.restoreSession(request.params as AcpRestoreSessionParams);
       case ACP_METHODS.prompt:
         return this.prompt(request.params as AcpPromptParams);
       case ACP_METHODS.respondPermission:
@@ -406,7 +456,7 @@ export class AgentConnection {
     ) {
       throw operationalError(
         "ACP_INVALID_PARAMS",
-        "M3 clients must support streaming and permissioning",
+        "clients must support streaming and permissioning",
         ACP_RPC_ERROR_CODES.invalidParams,
       );
     }
@@ -415,7 +465,11 @@ export class AgentConnection {
       protocolVersion: ACP_PROTOCOL_VERSION,
       agentName: this.options.agentName ?? DEFAULT_AGENT_NAME,
       agentVersion: this.options.agentVersion ?? DEFAULT_AGENT_VERSION,
-      capabilities: { streaming: true, permissioning: true, sessions: false },
+      capabilities: {
+        streaming: true,
+        permissioning: true,
+        sessions: this.sessionStore !== undefined,
+      },
       models: this.modelNames,
     };
   }
@@ -464,6 +518,9 @@ export class AgentConnection {
       }
     }
     const sessionId = this.newId("sess");
+    if (this.activeSessionIds.has(sessionId)) {
+      throw new Error(`session id collision: ${sessionId}`);
+    }
     const context: AgentSessionContext = {
       sessionId,
       workspace,
@@ -479,17 +536,33 @@ export class AgentConnection {
     if (this.options.sandbox && manifest && tools.has(SANDBOX_EXEC_TOOL)) {
       throw unsafeTool(SANDBOX_EXEC_TOOL, "reserved built-in tool name");
     }
-    const store = this.sessionDbPath
-      ? openSqliteSession(this.sessionDbPath, { sessionId, taskId: params.taskId, createdAt: this.now() })
-      : undefined;
+    const createdAt = this.sessionStore
+      ? await this.sessionStore.currentTime()
+      : this.now();
+    const metadata: SessionMetadata = {
+      kind: "agent-session",
+      workspace,
+      modelName,
+      ownerId: this.connectionId,
+      leaseExpiresAt: addMilliseconds(createdAt, this.sessionLeaseMs),
+    };
+    const stored = await this.sessionStore?.createSession({
+      sessionId,
+      taskId: params.taskId,
+      createdAt,
+      metadata,
+    });
+    if (stored && stored.metadata.ownerId !== this.connectionId) {
+      throw new Error(`session id collision: ${sessionId}`);
+    }
     const state: SessionState = {
       ...context,
       state: "created",
       model,
       tools,
       eventCount: 0,
-      appendQueue: Promise.resolve(),
-      store,
+      log: this.sessionStore?.eventLog(sessionId, { ownerId: this.connectionId }),
+      metadata,
       abort: new AbortController(),
       pending: new Map(),
       resolvedPermissions: new Set(),
@@ -520,11 +593,168 @@ export class AgentConnection {
       if (state.state !== "created") return;
       state.state = "canceled";
       state.abort.abort();
-      this.finishSession(state);
+      this.track(this.finishSession(state));
     }, this.createdSessionTimeoutMs);
     state.idleTimer.unref();
+    this.activeSessionIds.add(sessionId);
+    this.armSessionLease(state);
     this.sessions.set(sessionId, state);
     return { sessionId };
+  }
+
+  private async restoreSession(
+    params: AcpRestoreSessionParams,
+  ): Promise<unknown> {
+    if (!this.sessionStore) {
+      throw operationalError(
+        "ACP_SESSION_NOT_RESTORABLE",
+        "session persistence is disabled",
+        ACP_RPC_ERROR_CODES.sessionNotRestorable,
+      );
+    }
+    try {
+      const record = await this.sessionStore.getSession(params.sessionId);
+      const metadata = record.metadata;
+      if (
+        metadata.kind !== "agent-session" ||
+        !workspaceIsInScope(this.root, metadata.workspace) ||
+        typeof metadata.modelName !== "string" ||
+        !this.modelFactories.has(metadata.modelName) ||
+        typeof metadata.ownerId !== "string" ||
+        metadata.ownerId.length === 0 ||
+        typeof metadata.leaseExpiresAt !== "string" ||
+        !Number.isFinite(Date.parse(metadata.leaseExpiresAt))
+      ) {
+        throw operationalError(
+          "ACP_SESSION_NOT_RESTORABLE",
+          `session ${params.sessionId} is not an agent session in this workspace scope`,
+          ACP_RPC_ERROR_CODES.sessionNotRestorable,
+        );
+      }
+      const log = this.sessionStore.eventLog(params.sessionId);
+      const sizeBeforeRecovery = await log.size();
+      const lastBeforeRecovery = sizeBeforeRecovery - 1;
+      if (params.afterSeq > lastBeforeRecovery) {
+        throw operationalError(
+          "ACP_INVALID_PARAMS",
+          `restore cursor ${params.afterSeq} is beyond the last durable sequence ${lastBeforeRecovery}`,
+          ACP_RPC_ERROR_CODES.invalidParams,
+        );
+      }
+
+      let status: "completed" | "interrupted" = record.status === "active"
+        ? "completed"
+        : await this.restoredStatus(log);
+      if (record.status === "active") {
+        const restoreAt = await this.sessionStore.currentTime();
+        const restoreTime = Date.parse(restoreAt);
+        if (!Number.isFinite(restoreTime)) {
+          throw new Error("agent-server clock returned an invalid timestamp");
+        }
+        const expiresAt = metadata.leaseExpiresAt;
+        if (Date.parse(expiresAt) > restoreTime) {
+          throw operationalError(
+            "ACP_SESSION_NOT_RESTORABLE",
+            `session ${params.sessionId} owner lease has not expired`,
+            ACP_RPC_ERROR_CODES.sessionNotRestorable,
+          );
+        }
+        const tail = sizeBeforeRecovery === 0
+          ? undefined
+          : (await log.read({ afterSeq: sizeBeforeRecovery - 2, limit: 1 }))
+              .events[0]?.event;
+        if (tail?.type === "agent.stopped") {
+          // The kernel durably published its terminal event; only the row-close
+          // bookkeeping was lost. Closing it does not retry uncertain work.
+          const transition = await this.sessionStore.transitionSession(
+            params.sessionId,
+            "active",
+            "closed",
+            restoreAt,
+          );
+          status = transition.changed ? "completed" : await this.restoredStatus(log);
+        } else {
+          const interrupted = createEvent("session.restored", {
+            sessionId: params.sessionId,
+            afterSeq: params.afterSeq,
+            availableThroughSeq: lastBeforeRecovery,
+            availableEvents: Math.max(0, sizeBeforeRecovery - params.afterSeq - 1),
+            outcome: "interrupted",
+            note: "previous owner lease expired; incomplete turn was not re-executed",
+          }, {
+            eventId: this.newId("evt"),
+            at: restoreAt,
+            actor: "agent-server",
+          });
+          const recovery = await this.sessionStore.recoverInterrupted(
+            params.sessionId,
+            interrupted,
+            restoreAt,
+            metadata,
+          );
+          // Another closer can win after the initial read. Derive the result
+          // from the durable tail instead of claiming our interrupted marker
+          // committed when recoverInterrupted reports otherwise.
+          status = recovery.recovered
+            ? "interrupted"
+            : await this.restoredStatus(log);
+        }
+      }
+
+      const page = await this.sessionStore.readSessionEvents(params.sessionId, {
+        afterSeq: params.afterSeq,
+        limit: params.limit,
+      });
+      for (const item of page.events) {
+        this.sendWire(acpEvent({
+          sessionId: params.sessionId,
+          seq: item.seq,
+          event: item.event,
+        }));
+      }
+      return {
+        sessionId: params.sessionId,
+        status,
+        replayedFromSeq: params.afterSeq + 1,
+        replayedThroughSeq: page.nextAfterSeq,
+        replayedEvents: page.events.length,
+        hasMore: page.hasMore,
+      };
+    } catch (error) {
+      if (error instanceof AcpProtocolError) throw error;
+      if (error instanceof SessionStoreError && error.code === "SESS_NOT_FOUND") {
+        throw operationalError(
+          "ACP_SESSION_NOT_FOUND",
+          `unknown session: ${params.sessionId}`,
+          ACP_RPC_ERROR_CODES.sessionNotFound,
+        );
+      }
+      if (error instanceof SessionStoreError && error.code === "SESS_INVALID_CURSOR") {
+        throw operationalError(
+          "ACP_INVALID_PARAMS",
+          error.message,
+          ACP_RPC_ERROR_CODES.invalidParams,
+        );
+      }
+      if (error instanceof SessionStoreError && error.code === "SESS_RECOVERY_CONFLICT") {
+        throw operationalError(
+          "ACP_SESSION_NOT_RESTORABLE",
+          `session ${params.sessionId} owner lease changed during recovery`,
+          ACP_RPC_ERROR_CODES.sessionNotRestorable,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async restoredStatus(log: EventLog): Promise<"completed" | "interrupted"> {
+    const size = await log.size();
+    if (size === 0) return "completed";
+    const tail = await log.read({ afterSeq: size - 2, limit: 1 });
+    const event = tail.events[0]?.event;
+    return event?.type === "session.restored" && event.data.outcome === "interrupted"
+      ? "interrupted"
+      : "completed";
   }
 
   private async prompt(params: AcpPromptParams): Promise<unknown> {
@@ -573,21 +803,19 @@ export class AgentConnection {
         : session.abort.signal.aborted
           ? "canceled"
           : "failed";
-      await session.appendQueue;
-      this.finishSession(session);
+      await this.finishSession(session, session.appendError === undefined);
       throw error;
     }
-    await session.appendQueue;
     if (session.appendError) {
       session.state = "failed";
-      this.finishSession(session);
+      await this.finishSession(session, false);
       throw new Error("session event persistence failed");
     }
-    this.finishSession(session);
+    await this.finishSession(session);
     return {
       status: result.status,
-      // M3 requires streaming clients and does not advertise replay. Avoid
-      // duplicating the entire stream into one frame at prompt completion.
+      // Events are streamed and can be replayed by cursor; do not duplicate
+      // the entire stream into one prompt-completion frame.
       events: [],
       finalText: result.text,
       usage: result.usage,
@@ -630,7 +858,7 @@ export class AgentConnection {
     session.abort.abort();
     if (session.state === "created") {
       session.state = "canceled";
-      this.finishSession(session);
+      this.track(this.finishSession(session));
     }
     return { canceled: true };
   }
@@ -667,7 +895,7 @@ export class AgentConnection {
     decision: Decision,
     callId: string,
   ): Promise<"allow" | "deny"> {
-    this.recordEvent(session, createEvent("policy.decision", {
+    await this.recordEvent(session, createEvent("policy.decision", {
       action: decision.action,
       subject: decision.subject,
       effect: decision.effect,
@@ -687,12 +915,12 @@ export class AgentConnection {
       return "allow";
     }
 
-    this.recordEvent(session, createEvent("permission.requested", request, {
+    await this.recordEvent(session, createEvent("permission.requested", request, {
       actor: "sandbox-runner",
       at: this.now(),
     }));
     const resolution = await this.awaitPermission(session, request);
-    this.recordEvent(session, createEvent("permission.resolved", {
+    await this.recordEvent(session, createEvent("permission.resolved", {
       ...request,
       decision: resolution.decision,
       note: resolution.note,
@@ -700,18 +928,58 @@ export class AgentConnection {
     return resolution.decision;
   }
 
-  private recordSandboxDecision(
+  private async recordSandboxDecision(
     session: SessionState,
     outcome: EnforcedDecision,
-  ): void {
+  ): Promise<void> {
     // Ask decisions are emitted before their permission request above.
     if (outcome.decision.effect === "ask") return;
-    this.recordEvent(session, createEvent("policy.decision", {
+    await this.recordEvent(session, createEvent("policy.decision", {
       action: outcome.decision.action,
       subject: outcome.decision.subject,
       effect: outcome.decision.effect,
       reason: outcome.decision.reason,
     }, { actor: "sandbox-runner", at: this.now() }));
+  }
+
+  private track(operation: Promise<void>): void {
+    let tracked!: Promise<void>;
+    tracked = operation.finally(() => this.inFlight.delete(tracked));
+    this.inFlight.add(tracked);
+  }
+
+  private armSessionLease(session: SessionState): void {
+    if (!this.sessionStore) return;
+    const delay = Math.max(500, Math.floor(this.sessionLeaseMs / 3));
+    session.leaseTimer = setTimeout(() => {
+      const refresh = async () => {
+        if (
+          session.state === "completed" ||
+          session.state === "failed" ||
+          session.state === "canceled"
+        ) return;
+        try {
+          const leaseTime = await this.sessionStore!.currentTime();
+          const refreshed: SessionMetadata = {
+            ...session.metadata,
+            ownerId: this.connectionId,
+            leaseExpiresAt: addMilliseconds(leaseTime, this.sessionLeaseMs),
+          };
+          await this.sessionStore!.setMetadata(
+            session.sessionId,
+            refreshed,
+            { ownerId: this.connectionId },
+          );
+          session.metadata = refreshed;
+          this.armSessionLease(session);
+        } catch (error) {
+          session.appendError ??= error;
+          session.abort.abort();
+        }
+      };
+      this.track(refresh());
+    }, delay);
+    session.leaseTimer.unref();
   }
 
   private denyPending(session: SessionState, note: string): void {
@@ -723,11 +991,16 @@ export class AgentConnection {
     session.pending.clear();
   }
 
-  private recordEvent(session: SessionState, event: AnyHarnessEvent): void {
+  private async recordEvent(
+    session: SessionState,
+    event: AnyHarnessEvent,
+  ): Promise<void> {
     let safe: AnyHarnessEvent;
+    let redactionError: unknown;
     try {
       safe = redactEvent(event);
     } catch (error) {
+      redactionError = error;
       session.appendError ??= error;
       session.abort.abort();
       safe = createEvent("error", {
@@ -736,25 +1009,22 @@ export class AgentConnection {
         retryable: false,
       }, { actor: "agent-server", at: this.now() });
     }
-    const seq = session.eventCount++;
-    if (session.store) {
-      // SqliteEventLog performs its append synchronously before returning its
-      // Promise. Start it here so an allow decision is durably ordered before
-      // the kernel can cross the following tool boundary; retain the queue to
-      // aggregate completion/failure before the session closes.
-      const pendingAppend = session.store.log.append(safe).catch((error) => {
-          session.appendError ??= error;
-          session.abort.abort();
-        });
-      session.appendQueue = session.appendQueue.then(async () => {
-        await pendingAppend;
-      });
-    }
+    let seq = session.eventCount;
     try {
+      if (session.log) {
+        // The store owns the canonical sequence. Awaiting it is the durability
+        // fence before the kernel can cross a model/tool side-effect boundary.
+        seq = (await session.log.appendSequenced(safe)).seq;
+      }
+      session.eventCount = Math.max(session.eventCount, seq + 1);
       this.sendWire(acpEvent({ sessionId: session.sessionId, seq, event: safe }));
     } catch (error) {
       session.appendError ??= error;
       session.abort.abort();
+      throw error;
+    }
+    if (redactionError !== undefined) {
+      throw redactionError;
     }
   }
 
@@ -766,26 +1036,32 @@ export class AgentConnection {
     return session;
   }
 
-  private finishSession(session: SessionState): void {
+  private async finishSession(
+    session: SessionState,
+    closeDurable = true,
+  ): Promise<void> {
     this.denyPending(session, "session finished");
     if (session.idleTimer) {
       clearTimeout(session.idleTimer);
       session.idleTimer = undefined;
     }
+    if (session.leaseTimer) {
+      clearTimeout(session.leaseTimer);
+      session.leaseTimer = undefined;
+    }
     try {
-      if (session.store) {
-        if (this.sessionDbPath) {
-          setSessionStatus(this.sessionDbPath, session.sessionId, "closed", this.now());
-        }
+      if (this.sessionStore && closeDurable) {
+        await this.sessionStore.transitionSession(
+          session.sessionId,
+          "active",
+          "closed",
+          undefined,
+          { ownerId: this.connectionId },
+        );
       }
     } finally {
-      this.closeStore(session);
+      this.activeSessionIds.delete(session.sessionId);
     }
-  }
-
-  private closeStore(session: SessionState): void {
-    session.store?.close();
-    session.store = undefined;
   }
 
   private sendError(id: AcpRequestId | null, error: unknown): void {

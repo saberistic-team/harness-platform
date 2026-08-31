@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: harness-run-
+  namespace: harness-sandboxes
+  labels:
+    app.kubernetes.io/name: sandbox-runner
+    app.kubernetes.io/component: execution
+    app.kubernetes.io/part-of: harness
+    harness.dev/run-id: replace-run-id
+    harness.dev/network-profile: deny
+  annotations:
+    harness.dev/template-only: "true"
+    harness.dev/runtime-status: "contract-only; the current control-plane does not materialize this Job"
+    harness.dev/replace-before-start: "run id, image digest, argv, workspace PVC, deadline, and approved writable mounts"
+spec:
+  # A future executor must not clear this flag until it has validated and
+  # replaced every run-specific field. The current runtime does not consume
+  # or materialize this template.
+  suspend: true
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sandbox-runner
+        app.kubernetes.io/component: execution
+        app.kubernetes.io/part-of: harness
+        harness.dev/run-id: replace-run-id
+        harness.dev/network-profile: deny
+    spec:
+      serviceAccountName: harness-sandbox
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sandbox
+          image: example.invalid/harness/sandbox:REPLACE_VERSION@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          command: ["replace-command"]
+          args: ["replace-argv"]
+          workingDir: /workspace
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: HTTP_PROXY, value: "" }
+            - { name: HTTPS_PROXY, value: "" }
+            - { name: ALL_PROXY, value: "" }
+            - { name: NO_PROXY, value: "" }
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+              ephemeral-storage: 64Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+              ephemeral-storage: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: replace-workspace-pvc
+            readOnly: true
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

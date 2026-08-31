@@ -16,6 +16,26 @@ describe("agent-server environment configuration", () => {
     });
   });
 
+  it("validates and retains the shared Postgres session URL", () => {
+    expect(agentServerConfigFromEnvironment({
+      HARNESS_DATABASE_URL: "postgresql://harness:secret@db.internal/harness?sslmode=verify-full",
+    })).toMatchObject({
+      databaseUrl: "postgresql://harness:secret@db.internal/harness?sslmode=verify-full",
+    });
+    expect(() => agentServerConfigFromEnvironment({
+      HARNESS_DATABASE_URL: "https://db.internal/harness",
+    })).toThrow("must use postgres:// or postgresql://");
+  });
+
+  it("retains a deployment readiness path", () => {
+    expect(agentServerConfigFromEnvironment({
+      HARNESS_AGENT_READINESS_PATH: "/workspace/tasks",
+    })).toMatchObject({ readinessPath: "/workspace/tasks" });
+    expect(() => agentServerConfigFromEnvironment({
+      HARNESS_AGENT_READINESS_PATH: "   ",
+    })).toThrow("HARNESS_AGENT_READINESS_PATH must be non-empty when set");
+  });
+
   it("maps explicit transport and sandbox settings", () => {
     expect(agentServerConfigFromEnvironment({
       HARNESS_AGENT_TOKEN: "  a-secret-token  ",

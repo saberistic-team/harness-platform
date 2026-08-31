@@ -14,14 +14,18 @@ export const CURRENT_EVENT_VERSION = 1;
 export const SUPPORTED_EVENT_VERSIONS: readonly number[] = [1];
 
 const id = z.string().min(1);
-const iso = z.string().min(1, "'at' must be an ISO-8601 timestamp");
+const iso = z.string().datetime({ offset: true, message: "must be an ISO-8601 timestamp" });
 const usage = z.object({
   promptTokens: z.number().int().nonnegative(),
   completionTokens: z.number().int().nonnegative(),
   totalTokens: z.number().int().nonnegative(),
 });
 
-function envelope(type: string, data: z.ZodTypeAny) {
+function strictObjectData<D extends z.ZodTypeAny>(data: D): D {
+  return (data instanceof z.ZodObject ? data.strict() : data) as D;
+}
+
+function envelope<T extends string, D extends z.ZodTypeAny>(type: T, data: D) {
   return z.object({
     v: z.literal(CURRENT_EVENT_VERSION, {
       message: `expected envelope version ${CURRENT_EVENT_VERSION}`,
@@ -30,13 +34,25 @@ function envelope(type: string, data: z.ZodTypeAny) {
     eventId: id,
     at: iso,
     actor: id.optional(),
-    data,
-  });
+    data: strictObjectData(data),
+  }).strict();
 }
 
 export const sessionCreated = envelope(
   "session.created",
   z.object({ sessionId: id, workspace: id.optional() }),
+);
+
+export const sessionRestored = envelope(
+  "session.restored",
+  z.object({
+    sessionId: id,
+    afterSeq: z.number().int().min(-1),
+    availableThroughSeq: z.number().int().min(-1),
+    availableEvents: z.number().int().nonnegative(),
+    outcome: z.enum(["ready", "completed", "interrupted"]),
+    note: z.string().optional(),
+  }),
 );
 
 export const agentStarted = envelope(
@@ -200,6 +216,128 @@ export const runRecorded = envelope(
   }),
 );
 
+export const runScheduled = envelope(
+  "run.scheduled",
+  z.object({
+    runId: id,
+    taskId: id,
+    attempt: z.number().int().positive(),
+    manifestDigest: id,
+  }),
+);
+
+export const runLeased = envelope(
+  "run.leased",
+  z.object({
+    runId: id,
+    taskId: id,
+    workerId: id,
+    fencingToken: z.number().int().positive(),
+    expiresAt: iso,
+  }),
+);
+
+const controlPlaneRunState = z.enum([
+  "queued",
+  "leased",
+  "running",
+  "passed",
+  "failed",
+  "blocked",
+  "canceled",
+  "indeterminate",
+]);
+
+/** Canonical control-plane run mutations after scheduling and leasing. */
+export const runUpdated = envelope(
+  "run.updated",
+  z.object({
+    runId: id,
+    taskId: id,
+    change: z.enum([
+      "started",
+      "heartbeat",
+      "completed",
+      "canceled",
+      "lease_expired_requeued",
+      "lease_expired_indeterminate",
+      "reconciled",
+    ]),
+    status: controlPlaneRunState,
+    previousStatus: controlPlaneRunState,
+    version: z.number().int().positive(),
+    attempt: z.number().int().positive(),
+    workerId: id.optional(),
+    fencingToken: z.number().int().nonnegative(),
+    leaseExpiresAt: iso.optional(),
+    reportPath: id.optional(),
+    note: z.string().optional(),
+  }).strict().superRefine((value, context) => {
+    const valid = (
+      (value.change === "started" && value.previousStatus === "leased" && value.status === "running") ||
+      (value.change === "heartbeat" && value.previousStatus === value.status && (value.status === "leased" || value.status === "running")) ||
+      (value.change === "completed" && value.previousStatus === "running" && (value.status === "passed" || value.status === "failed" || value.status === "blocked")) ||
+      (value.change === "canceled" && value.status === "canceled") ||
+      (value.change === "lease_expired_requeued" && value.previousStatus === "leased" && value.status === "queued") ||
+      (value.change === "lease_expired_indeterminate" && value.previousStatus === "running" && value.status === "indeterminate") ||
+      (value.change === "reconciled" && value.previousStatus === "indeterminate" && (value.status === "queued" || value.status === "canceled"))
+    );
+    if (!valid) {
+      context.addIssue({
+        code: "custom",
+        message: "change, previousStatus, and status do not describe a valid run mutation",
+        path: ["change"],
+      });
+    }
+    const active = value.status === "leased" || value.status === "running";
+    if (active && (!value.workerId || !value.leaseExpiresAt || value.fencingToken < 1)) {
+      context.addIssue({
+        code: "custom",
+        message: "active run updates require workerId, leaseExpiresAt, and a positive fencingToken",
+        path: ["status"],
+      });
+    }
+    if (!active && (value.workerId !== undefined || value.leaseExpiresAt !== undefined)) {
+      context.addIssue({
+        code: "custom",
+        message: "inactive run updates cannot retain lease metadata",
+        path: ["status"],
+      });
+    }
+  }),
+);
+
+export const artifactRegistered = envelope(
+  "artifact.registered",
+  z.object({
+    artifactId: id,
+    kind: z.enum(["run_report", "output", "audit"]),
+    bucket: id,
+    key: id,
+    sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+    bytes: z.number().int().nonnegative(),
+    contentType: id,
+    taskId: id.optional(),
+    runId: id.optional(),
+    sessionId: id.optional(),
+  }),
+);
+
+export const auditExported = envelope(
+  "audit.exported",
+  z.object({
+    exportId: id,
+    artifactId: id,
+    fromSeq: z.number().int().nonnegative(),
+    toSeq: z.number().int().nonnegative(),
+    eventCount: z.number().int().nonnegative(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  }).strict().refine((value) => value.toSeq >= value.fromSeq, {
+    message: "toSeq must be greater than or equal to fromSeq",
+    path: ["toSeq"],
+  }),
+);
+
 export const errorEvent = envelope(
   "error",
   z.object({
@@ -215,6 +353,7 @@ export const errorEvent = envelope(
  */
 export const eventSchemas = {
   "session.created": sessionCreated,
+  "session.restored": sessionRestored,
   "agent.started": agentStarted,
   "agent.stopped": agentStopped,
   "model.request": modelRequest,
@@ -229,6 +368,11 @@ export const eventSchemas = {
   "sandbox.started": sandboxStarted,
   "sandbox.stopped": sandboxStopped,
   "run.recorded": runRecorded,
+  "run.scheduled": runScheduled,
+  "run.leased": runLeased,
+  "run.updated": runUpdated,
+  "artifact.registered": artifactRegistered,
+  "audit.exported": auditExported,
   "error": errorEvent,
 } as const;
 
