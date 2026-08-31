@@ -144,15 +144,27 @@ export const budgetWarning = envelope(
   }),
 );
 
-export const policyDecision = envelope(
-  "policy.decision",
-  z.object({
+const policyDecisionFields = {
     action: id,
     subject: z.string().optional(),
     effect: z.enum(["allow", "ask", "deny"]),
     reason: z.string().optional(),
     ruleId: id.optional(),
-  }),
+} as const;
+
+export const policyDecision = envelope(
+  "policy.decision",
+  z.union([
+    z.object({
+      taskId: id,
+      sessionId: id,
+      runId: id,
+      ...policyDecisionFields,
+    }).strict(),
+    // Historical/non-task producers remain decodable, but partial attribution
+    // is never accepted: an attributable decision carries the complete tuple.
+    z.object(policyDecisionFields).strict(),
+  ]),
 );
 
 const permissionScope = z.enum(["once", "run"]);
@@ -344,6 +356,20 @@ export const errorEvent = envelope(
     code: id,
     message: z.string(),
     retryable: z.boolean().optional(),
+    taskId: id.optional(),
+    sessionId: id.optional(),
+    runId: id.optional(),
+    stage: z
+      .enum([
+        "manifest",
+        "git",
+        "policy",
+        "builder",
+        "tests",
+        "evidence",
+        "report",
+      ])
+      .optional(),
   }),
 );
 

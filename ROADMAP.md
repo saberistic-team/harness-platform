@@ -6,9 +6,9 @@
 - `packages/kernel` — agent loop, budgets, event emission
 - `packages/models` — protocol + `FakeModel`
 - `packages/policy` — pure decision engine
-- `packages/sdk` — task manifest in, run report out
+- `packages/sdk` — task manifest in, normal/preflight run reports out
 - `packages/{tools,sessions,workspace,mcp,acp}` — protocol surfaces
-- `apps/cli` — `harness validate | run` (the exit gate)
+- `apps/cli` — `harness validate | run | bootstrap` (the exit gate)
 - `tasks/kernel-0001.yaml` — first dogfooded task contract
 - `skills/platform-builder` — operational skill
 - Infra: Docker dev image + compose (MinIO). No Kubernetes.
@@ -17,6 +17,23 @@
 - CI: `pnpm test` + `pnpm typecheck` + `harness run tasks/kernel-0001.yaml`
   as a required gate on every PR (dogfooding begins here)
   → `tasks/m1-ci-gate`, workflow in `.github/workflows/ci.yaml`
+- Exit-gate hardening: manifest-derived `tasks/<id>` identity, trusted CI
+  head/base tuple, committed/staged/unstaged/untracked/non-operational-ignored
+  evidence, raw byte/type/mode checks, Git environment and metadata attestation,
+  rename/copy endpoints, immutable manifest checkpoints, reserved evidence,
+  post-test scope recheck, test process-group cleanup, and failure-safe atomic
+  reports. Structural host-process and snapshot limits are documented in
+  `SECURITY.md`
+  → `tasks/m0-exit-gate-hardening`
+- Bootstrap: manifest → exact branch identity → TaskAgent → pre/post-test gate →
+  structured report. The production adapter targets upstream Pi with
+  offline-startup/non-interactive operation and a shell-free file-only tool set;
+  CI uses an injected builder and a spawned Pi-protocol fixture to exercise the
+  streaming adapter, not the installed Pi binary or a live model provider
+  → `tasks/m0-exit-gate-hardening`
+- PR CI chooses the branch-matching task manifest and supplies
+  `--ci-head-ref`, `--head-sha`, and `--base-ref` together
+  → `tasks/m0-exit-gate-hardening`
 - `apps/tui`: read-only session/event viewer
   → `tasks/m1-tui-viewer` (`harness-view list|show|report`)
 - `evals/scenarios` runner + first scenario against the golden kernel

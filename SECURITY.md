@@ -40,9 +40,15 @@ subject with pattern, no * ..........: deny   (closed for exec)
 
 1. **Kernel loop** — enforces budgets; refuses to run tools not in the
    registry; validates tool input schemas before execution.
-2. **CLI / agent-server** — task scope and reviewed tool boundaries. The CLI
-   gates changed paths before test/exec; the service admits only pure,
-   workspace-read, or Docker-sandboxed tools with matching boundaries.
+2. **CLI / agent-server** — task scope and reviewed tool boundaries. `run`
+   derives the exact `tasks/<id>` identity from the canonical manifest. Local
+   mode switches to that branch; only verified CI context permits detached
+   HEAD. The CLI gates committed, staged, unstaged, ordinary untracked,
+   non-operational ignored, and raw tracked byte/type/mode differences before
+   test/exec,
+   retains both endpoints of detected renames/copies, and repeats the gate
+   after tests. The service admits only pure, workspace-read, or
+   Docker-sandboxed tools with matching boundaries.
 3. **Sandbox-runner (M3, shipped)** — one container per run; network namespace
    isolated by default (`network: deny` unless the manifest has a rule);
    filesystem mounts scoped by `allowed_paths`; no host secrets in env.
@@ -97,6 +103,82 @@ store outside the mounted workspace (SQLite locally, Postgres when deployed)
 and rejects an in-workspace SQLite override. This prevents an otherwise broad
 `allowed_paths` entry from exposing the audit store to a model-controlled
 container.
+
+## Bootstrap and CI boundary
+
+- `harness bootstrap tasks/<id>.yaml --approve-write` follows one ordered
+  boundary: canonical task path + exact branch identity → authoritative
+  validated manifest → TaskAgent → pre-test and post-test scope gates →
+  structured report. The production TaskAgent targets
+  upstream Pi 0.84.x and validates its JSON protocol v3 completion sequence;
+  deterministic tests cover the integrated flow with an injected builder and
+  exercise the streaming adapter through a spawned Pi-protocol fixture. They do
+  not execute the installed Pi binary or call a live provider. `--approve-write`
+  resolves only the reviewed manifest's `fs.write: ask` decision for that
+  attempt; it cannot override `deny` or expand `allowed_paths`.
+- The upstream Pi adapter starts the executable directly, never through a
+  shell, requests offline-startup/non-interactive operation, and exposes only
+  the fixed file tools `read`, `grep`, `find`, `ls`, `edit`, and `write`. Sessions,
+  approvals, extensions, skills, prompt templates, and themes are disabled, and
+  the task prompt is sent over stdin. Pi's offline flag suppresses its own
+  startup network work; the configured model provider may still require
+  network access. Test commands are parsed into argv and also execute without a
+  shell.
+- A pull-request job derives `tasks/<id>.yaml` from its `tasks/<id>` head
+  branch. CI mode requires `--ci-head-ref`, `--head-sha`, and `--base-ref`
+  together, verifies them against the manifest and checkout, and treats a
+  free-form `--branch` label as untrusted input.
+- Git evidence is NUL-delimited and covers committed, staged, unstaged,
+  ordinary untracked, and non-operational ignored layers. Only dependency
+  trees, known TypeScript build caches, and exact harness evidence paths are
+  treated as operational baselines. New, changed, or deleted baseline files
+  are still evidence, except the exact hashed Vitest duration-cache
+  `node_modules/.vite/vitest/<sha1>/results.json` shape needed by the gate's own
+  test run; sibling cache writes remain evidence. Rename/copy evidence retains source and destination
+  paths; the scope calculation checks every write-relevant path, including the
+  canonical manifest when it changed. Raw bytes, symlink/file type, and
+  executable mode are checked against the index without clean filters.
+- Git subprocesses rebuild their environment without inherited `GIT_*`, disable
+  replacement-object lookup, and force file-mode detection. Branch switches
+  disable hooks. Replacement refs, assume-unchanged/skip-worktree entries,
+  gitlinks/submodules, unstable snapshots, and persistent changes to both the
+  per-worktree and common Git metadata fail closed. Repository, branch, HEAD,
+  manifest, metadata, and path scope are rechecked after builder/test execution.
+- `tasks/runs/**` is reserved evidence and violates task scope even when a
+  manifest allows `tasks/**`. The harness writes it only after the final scope
+  sample. Evidence directories must be canonical real directories, and the
+  SQLite database and sidecars must be single-link regular files. Fallback
+  reports use a newly created private temporary directory.
+
+The Git gate trusts the installed Git executable, the repository and object
+database as they exist at preflight, and the allow-listed local mainish base
+commit; a branch name does not prove server-side protection or freshness.
+Pre-existing repository configuration that can act during checkout, including
+configured filters, is also trusted. Operational ignored files that exist at
+preflight are a content baseline, not reclassified as task work until they are
+changed or deleted (apart from the exact volatile Vitest cache above). Repeated stable samples narrow races but are not an atomic
+filesystem snapshot, so a concurrent privileged writer remains outside this
+local boundary.
+
+The Step-0 Pi adapter and downstream test process are trusted host execution,
+not an OS sandbox. Their inherited environment is not scrubbed; the test can
+use host networking, and Pi's file tools are not preventively confined by
+`cwd`. On POSIX the test runs in a dedicated process group, and the harness
+terminates that group when the test parent exits or times out; a cleanup failure
+blocks the run. A descendant that creates a new session or daemonizes can escape that
+group and write after the final sample. On Windows only the direct child is
+terminated. The Git gate detects persistent repository changes, including
+broad-ignore writes outside narrow operational baselines, but cannot observe
+transient writes, escaped late writes, writes outside the repository, or
+model-provider traffic. Use the M3 Docker sandbox-runner for untrusted tasks or
+when `network`, host-secret, process, and preventive filesystem isolation must
+be enforced. Reported builder usage is checked against manifest budgets and
+missing, partial, inconsistent, or zero-placeholder usage fails closed. The
+production Pi path consumes JSONL as it arrives and terminates Pi when reported
+message, compaction, or tool-call usage first crosses a manifest budget. A
+single provider response can still overshoot before Pi emits its usage event;
+the synchronous process seam exists only for deterministic protocol tests and
+checks the completed stream after the fixture exits.
 
 ## M4 control-plane boundary
 
@@ -170,6 +252,23 @@ container.
   lane itself has network access denied.
 
 ## Reporting
+
+Normal outcomes, including policy, builder, and test failures after preflight,
+use `run-report/v2`. Historical `run-report/v1` remains importable for display
+but is not a current attestation. Malformed-manifest and early-Git attempts use the strict
+`run-preflight-report/v1` contract because a complete normal run cannot yet be
+constructed. Both preserve structured attribution and failure evidence.
+
+Normal reports are synced and atomically renamed. `run.recorded` is embedded
+as that artifact's commit receipt and is forwarded to telemetry only after the
+rename succeeds; it is intentionally not pre-written to SQLite. A durable
+session or preferred report-write failure forces exit 1. If the repository
+report path is unavailable, the CLI attempts temporary fallback storage; if no
+destination can be written it still returns validated in-memory evidence with
+`deliverables.reportWritten: false` and emits no `run.recorded` receipt.
+New normal reports also enforce agreement among exact task branch identity,
+Git attachment state, path violations, tests, primary and ordered failures,
+status, and the single matching commit receipt.
 
 Security-relevant bugs: open a **private** issue on the owning repo,
 tag `security`. Do not write the vulnerability in run reports, events,

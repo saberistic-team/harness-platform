@@ -10,15 +10,66 @@ proves otherwise.
 ## Quick start
 
 ```bash
-# Node 22+ and a recent pnpm required
+# Node 22+, a recent pnpm, and Pi CLI 0.84.x for bootstrap required
 pnpm install
 pnpm test                       # vitest, all packages
 pnpm typecheck                  # tsc strict across the workspace
 
-# The exit gate:
-pnpm harness validate tasks/kernel-0001.yaml
-pnpm harness run tasks/kernel-0001.yaml
+# Validate or gate work that already exists:
+pnpm harness validate tasks/<id>.yaml
+pnpm harness run tasks/<id>.yaml
+
+# Build with upstream Pi, then run the same gate:
+pnpm harness bootstrap tasks/<id>.yaml --approve-write
 ```
+
+`bootstrap` follows one auditable contract: canonical task path + exact
+`tasks/<id>` identity → authoritative validated manifest → TaskAgent builder →
+pre-test and post-test scope gates → structured report. Its production adapter
+targets upstream Pi 0.84.x and validates JSON protocol v3. Deterministic tests
+prove the harness composition and production streaming-adapter contract with
+an injected TaskAgent and a spawned Pi-protocol fixture. They do not execute
+the installed Pi binary or call a live model provider.
+`--approve-write` explicitly resolves a manifest
+`fs.write: ask` decision for that attempt. The Pi adapter starts in Pi's
+offline-startup, non-interactive mode without a shell and exposes only the
+fixed file tools `read`, `grep`, `find`, `ls`, `edit`, and `write`. A configured
+model provider may still require network access. Test commands are likewise
+parsed into a single executable plus argv and are never interpreted by a shell.
+
+Both `run` and `bootstrap` require the canonical `tasks/<id>.yaml` manifest and
+derive `tasks/<id>` from it; a free-form branch label is not accepted. Local
+mode switches to or creates that exact branch. A detached checkout is accepted
+only in CI when the head ref, head object ID, and base supplied by trusted CI
+event data all verify. A changed manifest is checked against `allowed_paths`
+like every other changed path. Their stable Git samples cover committed,
+staged, unstaged, ordinary untracked, and non-operational ignored changes,
+including raw tracked byte, type, and executable-mode differences.
+Detected renames and copies retain their source and destination, and the path
+gate is rerun after tests so a test cannot leave an out-of-scope write behind.
+`tasks/runs/**` is reserved for harness evidence and is never writable task
+scope, even when a manifest otherwise allows `tasks/**`.
+
+Pull-request CI chooses `tasks/<id>.yaml` from the `tasks/<id>` head branch and
+supplies the trusted Git tuple together:
+
+```bash
+pnpm harness run tasks/<id>.yaml \
+  --ci-head-ref tasks/<id> \
+  --head-sha <full-head-sha> \
+  --base-ref <full-base-sha>
+```
+
+Normal gated outcomes use the attestable `run-report/v2`. Historical
+`run-report/v1` artifacts remain readable but are not accepted as current gate
+evidence. An attempt that cannot establish a
+valid manifest or Git preflight uses `run-preflight-report/v1`, so even an
+early failure leaves structured evidence. Reports are committed by atomic
+rename. Durable-session or report-write failure can never return `passed`; a
+failed preferred write falls back to a temporary artifact, and
+`deliverables.reportWritten` distinguishes a committed artifact from the
+validated in-memory last resort. New normal reports also reject contradictory
+branch, scope, test, failure, Git, or `run.recorded` receipt evidence.
 
 ## What's here
 
@@ -34,8 +85,8 @@ pnpm harness run tasks/kernel-0001.yaml
 | `packages/mcp`       | MCP wire shapes + initialize-era stdio client             |
 | `packages/acp`       | Agent Client Protocol types                                |
 | `packages/otel`      | Event stream → OpenTelemetry spans and metrics             |
-| `packages/sdk`       | Task manifest (input) + run report (output) contracts      |
-| `apps/cli`           | Exit-gate CLI: `harness validate` \| `harness run`         |
+| `packages/sdk`       | Task manifest + normal/preflight report contracts          |
+| `apps/cli`           | Exit-gate CLI: `harness validate` \| `run` \| `bootstrap` |
 | `apps/tui`           | Session viewer + interactive ACP permission client         |
 | `apps/web`           | Read-only task board                                       |
 | `services/agent-server` | ACP JSON-RPC over WebSocket; one run per session       |
@@ -61,7 +112,7 @@ Every task, no exceptions:
 - [ ] manifest in `tasks/` passes `harness validate`
 - [ ] changes stay inside `allowed_paths`
 - [ ] `pnpm test` and `pnpm typecheck` green
-- [ ] exit gate: `harness run` → status `passed`
+- [ ] exit gate: `harness run` (or the gate in `harness bootstrap`) → `passed`
 - [ ] run report (`tasks/runs/*.json`) linked in the PR
 - [ ] new event types documented in `EVENTS.md`
 
