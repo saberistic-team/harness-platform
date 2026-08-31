@@ -47,6 +47,59 @@ the packages; code that violates it is a bug.
 Everything around the kernel (servers, sandboxes, UIs) is replaceable
 without touching it. That is the property the tests and evals exploit.
 
+### M6 additive runtime contract
+
+M6 begins the self-hosting kernel migration without replacing the proven M0
+loop. `runAgent()` and `Model.complete()` remain supported while
+`MinimalAgentRuntime` adds the caller-facing `AgentRuntime` contract and
+`CompleteModelAdapter` bridges completion-only models to `ModelAdapter`.
+The M6 implementation is deliberately one text-only model request; the
+policy-gated multi-round tool loop remains M7 work.
+
+The runtime owns model invocation, message/context state, event publication,
+run cancellation and steering lifecycle, and the narrow persistence port. It
+does not own policy decisions, workspace implementations, provider credentials,
+scheduling, UI, or side-effect enforcement. The kernel-facing `Tool` and
+operational `Workspace` interfaces in `packages/kernel/src/runtime.ts` are
+compatibility targets only. A workspace is never placed directly in model
+input; reviewed bounded tools are the only future callers of its operations.
+
+`RunInput` requires caller-known `runId`, `sessionId`, and `turnId` values plus
+an explicit model name because `ModelAdapter` intentionally has no provider
+identity. Registering the run and snapshotting caller-owned input are
+synchronous, so later mutation cannot redirect events and `steer()` or
+`cancel()` can address the run before event consumption begins. One per-run
+writer serializes every append. The runtime appends before queueing an event for
+its single-use async iterator, and the producer crosses a model boundary or
+pulls another model event only after the consumer advances. Store failure
+poisons the writer, aborts the model, wakes the consumer with a typed error, and
+prevents later boundaries. Completed runs are retained only as small identity
+tombstones so duplicate or terminal controls stay typed without retaining
+session context or adapters.
+
+The small `EventStore` interface is a session-facing dependency-inversion view,
+not an alternate database contract. Its production adapter is backed by
+`SessionStore`/`EventLog`, which remain authoritative for sequence allocation,
+stable-event-id idempotency, checkpoint CAS, and owner fencing. M6 tests use an
+in-memory recording fake local to the test; the kernel package adds no durable
+store implementation or dependency on `@harness/sessions`.
+
+Early steering is appended before `steer()` returns. The same per-run writer
+linearizes the steering queue with `model.request`: messages committed before
+the request enter that context snapshot. Because M6 has exactly one request,
+steering linearized after that boundary is rejected with a typed error instead
+of being durably orphaned; a later multi-round milestone can reopen a next-turn
+boundary. Cancel requests coalesce, re-canceling an already canceled run is a
+no-op, and other unknown or terminal identities are typed errors.
+Calling an iterator's `return()` or `throw()` is abandonment: the model is
+aborted and `turn.completed(status=canceled)` is still persisted even though
+that consumer cannot receive it. If the terminal append fails, cancellation or
+abandonment rejects with the typed persistence error. Provider cancellation is
+defined by the forwarded `AbortSignal`; iterator `return()` is invoked as
+best-effort cleanup and does not delay the durable cancellation result. Merely
+losing a JavaScript object cannot be observed and is not treated as a
+cancellation signal.
+
 ## 2. Layers
 
 ### L1 — Contracts (packages/)

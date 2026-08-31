@@ -21,6 +21,27 @@ const usage = z.object({
   totalTokens: z.number().int().nonnegative(),
 });
 
+const modelFinishReason = z.enum(["stop", "tool_calls", "length", "error"]);
+
+// Runtime message text is durable evidence. Bound each individual field so a
+// malformed producer cannot turn one event into an unbounded allocation while
+// still leaving ample room for a full model-context-sized message.
+const messageContent = z.string().max(16 * 1024 * 1024);
+const messageDeltaContent = z.string().min(1).max(1024 * 1024);
+const steeringContent = z.string().min(1).max(256 * 1024);
+const eventCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+
+const runtimeIdentity = {
+  runId: id,
+  sessionId: id,
+  turnId: id,
+} as const;
+
+const messageIdentity = {
+  ...runtimeIdentity,
+  messageId: id,
+} as const;
+
 function strictObjectData<D extends z.ZodTypeAny>(data: D): D {
   return (data instanceof z.ZodObject ? data.strict() : data) as D;
 }
@@ -76,6 +97,110 @@ export const agentStopped = envelope(
   }),
 );
 
+/** A caller-known turn identity has been admitted by the runtime. */
+export const turnStarted = envelope(
+  "turn.started",
+  z.object({
+    ...runtimeIdentity,
+    inputMessageId: id,
+  }),
+);
+
+/** One ordered assistant-text chunk from a model request. */
+export const messageDelta = envelope(
+  "message.delta",
+  z.object({
+    ...messageIdentity,
+    requestId: id,
+    role: z.literal("assistant"),
+    sequence: eventCount,
+    delta: messageDeltaContent,
+  }),
+);
+
+/**
+ * A durable message snapshot. User input has no model-request identity;
+ * assistant output must identify the request and its terminal reason.
+ */
+export const messageCompleted = envelope(
+  "message.completed",
+  z.union([
+    z.object({
+      ...messageIdentity,
+      role: z.literal("user"),
+      content: messageContent.min(1),
+    }).strict(),
+    z.object({
+      ...messageIdentity,
+      requestId: id,
+      role: z.literal("assistant"),
+      content: messageContent,
+      finishReason: modelFinishReason,
+    }).strict(),
+  ]),
+);
+
+/** A steering message accepted for an active turn's next model boundary. */
+export const steeringQueued = envelope(
+  "steering.queued",
+  z.object({
+    ...messageIdentity,
+    content: steeringContent,
+  }),
+);
+
+/** A compacted context snapshot that is sufficient for durable replay. */
+export const contextCompacted = envelope(
+  "context.compacted",
+  z.object({
+    ...runtimeIdentity,
+    requestId: id.optional(),
+    summaryMessageId: id,
+    summary: messageContent.min(1),
+    beforeMessages: eventCount,
+    afterMessages: eventCount,
+    beforeTokens: eventCount.optional(),
+    afterTokens: eventCount.optional(),
+  }).strict().superRefine((value, context) => {
+    if (value.afterMessages >= value.beforeMessages) {
+      context.addIssue({
+        code: "custom",
+        message: "afterMessages must be less than beforeMessages",
+        path: ["afterMessages"],
+      });
+    }
+    if ((value.beforeTokens === undefined) !== (value.afterTokens === undefined)) {
+      context.addIssue({
+        code: "custom",
+        message: "beforeTokens and afterTokens must be provided together",
+        path: ["beforeTokens"],
+      });
+    } else if (
+      value.beforeTokens !== undefined &&
+      value.afterTokens !== undefined &&
+      value.afterTokens >= value.beforeTokens
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "afterTokens must be less than beforeTokens",
+        path: ["afterTokens"],
+      });
+    }
+  }),
+);
+
+/** The terminal outcome for exactly one admitted turn. */
+export const turnCompleted = envelope(
+  "turn.completed",
+  z.object({
+    ...runtimeIdentity,
+    status: z.enum(["completed", "failed", "canceled", "budget_exceeded"]),
+    outputMessageId: id.optional(),
+    modelRequests: eventCount,
+    toolCalls: eventCount,
+  }),
+);
+
 export const modelRequest = envelope(
   "model.request",
   z.object({
@@ -90,7 +215,7 @@ export const modelResponse = envelope(
   z.object({
     requestId: id,
     model: id,
-    finishReason: z.enum(["stop", "tool_calls", "length", "error"]),
+    finishReason: modelFinishReason,
     usage,
   }),
 );
@@ -382,6 +507,12 @@ export const eventSchemas = {
   "session.restored": sessionRestored,
   "agent.started": agentStarted,
   "agent.stopped": agentStopped,
+  "turn.started": turnStarted,
+  "message.delta": messageDelta,
+  "message.completed": messageCompleted,
+  "steering.queued": steeringQueued,
+  "context.compacted": contextCompacted,
+  "turn.completed": turnCompleted,
   "model.request": modelRequest,
   "model.response": modelResponse,
   "tool.call": toolCall,

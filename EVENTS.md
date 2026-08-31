@@ -45,6 +45,12 @@ Rules:
 | `session.restored` | an interrupted durable session is reconciled for replay | `sessionId`, `afterSeq`, `outcome` |
 | `agent.started`  | the kernel loop starts                  | `agentId`, `sessionId`, `model`   |
 | `agent.stopped`  | the loop ends for any reason            | `status`, `steps`, `toolCalls`    |
+| `turn.started`   | a caller-identified runtime turn is admitted | `runId`, `sessionId`, `turnId`, `inputMessageId` |
+| `message.delta`  | an ordered assistant-text chunk is durable | `runId`, `turnId`, `requestId`, `messageId`, `sequence`, `delta` |
+| `message.completed` | a complete user or assistant message is durable | `runId`, `turnId`, `messageId`, `role`, `content`, `requestId?` |
+| `steering.queued` | an active run accepts a steering message | `runId`, `sessionId`, `turnId`, `messageId`, `content` |
+| `context.compacted` | a smaller replayable context replaces prior context | `runId`, `turnId`, `summaryMessageId`, `beforeMessages`, `afterMessages` |
+| `turn.completed` | one admitted turn reaches a terminal outcome | `runId`, `sessionId`, `turnId`, `status`, `modelRequests`, `toolCalls` |
 | `model.request`  | a model turn is dispatched              | `requestId`, `model`              |
 | `model.response` | a model turn returns                    | `requestId`, `finishReason`, `usage` |
 | `tool.call`      | a tool is invoked                       | `callId`, `tool`, `input`         |
@@ -86,6 +92,63 @@ Consumers must:
    third-party MCP server) — schema-validate before using.
 3. Preserve rejected inbound frames in a caller-controlled quarantine when
    policy permits. Never append unvalidated input to the canonical audit stream.
+
+## Minimal runtime turn ordering
+
+The minimal runtime persists every event before making it visible through its
+async iterator. An append failure fails closed: the failed event is not yielded,
+and the runtime does not cross the next model or tool boundary. To support
+steering or cancellation before the caller consumes its first event, `run()` may
+eagerly persist the `turn.started` and input `message.completed` admission pair
+before iterator demand. After that admission pair, consumer advancement is the
+producer and model backpressure boundary: the runtime does not cross the model
+request boundary until the durable `model.request` event is consumed, and it
+does not pull another model chunk until the consumer advances after the current
+yielded event. Externally invoked controls may independently append their own
+events while the producer is backpressured.
+
+A deterministic text-only turn has this exact order:
+
+```text
+turn.started
+message.completed (role=user)
+model.request
+message.delta (role=assistant, sequence=0..n-1; zero or more)
+model.response
+message.completed (role=assistant)
+turn.completed (status=completed)
+```
+
+`turn.started.inputMessageId` identifies the immediately following durable user
+message. Each assistant delta carries the request and message identities; its
+per-message `sequence` starts at zero and is contiguous. When one or more deltas
+were emitted, concatenating them equals the assistant
+`message.completed.content`. A model may emit no deltas and return nonempty
+completed content, so the completed message is always the replayable source of
+truth. Assistant messages carry `requestId` and `finishReason`; user messages
+reject those model-only fields.
+
+`steering.queued` is appended before `steer()` resolves and its `messageId`
+becomes the durable identity used when the queued content enters context at the
+next model boundary. M6 has one such boundary: a steering call that linearizes
+after the sole `model.request` is rejected with a typed error instead of
+persisting content that cannot be consumed. Steering an unknown or terminal run
+is also a typed error. Canceling an active run is idempotent; abandoning its
+iterator has the same cancellation semantics and still durably terminates the
+turn, even though the abandoning consumer cannot receive that final event. A
+failed terminal append rejects cancellation or abandonment with the typed store
+error. Repeating cancellation of an already canceled run is a no-op, while
+other unknown or terminal identities remain typed errors.
+
+`context.compacted` contains the durable summary text and its message identity,
+not only telemetry. It must reduce the message count; token counts are optional
+but, when present, appear as a before/after pair and must also decrease. Its
+`requestId` is optional because deterministic compaction does not need a model
+request.
+
+Tool-loop producers continue to use `tool.call`, `policy.decision`, and
+`tool.result` for requested intent, the persisted policy outcome, and completed
+work. The policy decision is durable before any permitted side effect begins.
 
 ## Permission ordering
 

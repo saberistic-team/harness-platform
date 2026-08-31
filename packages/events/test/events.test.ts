@@ -27,6 +27,12 @@ function samples(): Array<{ type: EventType; event: AnyHarnessEvent }> {
     { type: "session.restored", event: createEvent("session.restored", { sessionId: "sess-1", afterSeq: 3, availableThroughSeq: 8, availableEvents: 5, outcome: "completed" }, opts) },
     { type: "agent.started", event: createEvent("agent.started", { agentId: "ag-1", sessionId: "sess-1", taskId: "kernel-0001", model: "fake-model/v1" }, opts) },
     { type: "agent.stopped", event: createEvent("agent.stopped", { agentId: "ag-1", status: "completed", steps: 3, toolCalls: 1 }, opts) },
+    { type: "turn.started", event: createEvent("turn.started", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", inputMessageId: "msg-user-1" }, opts) },
+    { type: "message.delta", event: createEvent("message.delta", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", requestId: "req-1", messageId: "msg-assistant-1", role: "assistant", sequence: 0, delta: "hello" }, opts) },
+    { type: "message.completed", event: createEvent("message.completed", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", requestId: "req-1", messageId: "msg-assistant-1", role: "assistant", content: "hello", finishReason: "stop" }, opts) },
+    { type: "steering.queued", event: createEvent("steering.queued", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", messageId: "msg-steer-1", content: "also check the tests" }, opts) },
+    { type: "context.compacted", event: createEvent("context.compacted", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", requestId: "req-compact-1", summaryMessageId: "msg-summary-1", summary: "Earlier work summarized.", beforeMessages: 20, afterMessages: 6, beforeTokens: 8_000, afterTokens: 2_000 }, opts) },
+    { type: "turn.completed", event: createEvent("turn.completed", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", status: "completed", outputMessageId: "msg-assistant-1", modelRequests: 1, toolCalls: 0 }, opts) },
     { type: "model.request", event: createEvent("model.request", { requestId: "req-1", model: "fake-model/v1", messageCount: 2 }, opts) },
     {
       type: "model.response",
@@ -72,7 +78,15 @@ describe("event round-trip", () => {
     }
   });
 
+  it("stably serializes runtime message identity and chunk order", () => {
+    const event = samples().find((sample) => sample.type === "message.delta")!.event;
+    expect(serializeEvent(event)).toBe(
+      `{"v":1,"type":"message.delta","eventId":"${FIXED_ID}","at":"${FIXED_AT}","actor":"system","data":{"runId":"run-1","sessionId":"sess-1","turnId":"turn-1","requestId":"req-1","messageId":"msg-assistant-1","role":"assistant","sequence":0,"delta":"hello"}}`,
+    );
+  });
+
   it("every schema in the registry validates its own sample", () => {
+    expect(samples().map(({ type }) => type)).toEqual(Object.keys(eventSchemas));
     for (const { type, event } of samples()) {
       expect(eventSchemas[type].safeParse(event).success).toBe(true);
     }
@@ -126,6 +140,102 @@ describe("event round-trip", () => {
       },
     };
     expect(eventSchemas["run.updated"].safeParse(invalid).success).toBe(false);
+  });
+
+  it("round-trips the strict user-message variant without model-only fields", () => {
+    const event = createEvent("message.completed", {
+      runId: "run-1",
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      messageId: "msg-user-1",
+      role: "user",
+      content: "diagnose the repository",
+    }, {
+      eventId: FIXED_ID,
+      at: FIXED_AT,
+      actor: "kernel",
+    });
+
+    expect(deserializeEvent(serializeEvent(event))).toEqual(event);
+  });
+});
+
+describe("runtime event schemas", () => {
+  const envelope = (type: EventType, data: Record<string, unknown>) => ({
+    v: 1,
+    type,
+    eventId: FIXED_ID,
+    at: FIXED_AT,
+    actor: "kernel",
+    data,
+  });
+
+  const identity = {
+    runId: "run-1",
+    sessionId: "sess-1",
+    turnId: "turn-1",
+    messageId: "msg-1",
+  };
+
+  it("rejects model-only fields on user messages and missing request identity on assistant messages", () => {
+    expect(() => deserializeEvent(envelope("message.completed", {
+      ...identity,
+      requestId: "req-1",
+      role: "user",
+      content: "hello",
+    }))).toThrow(EventSchemaError);
+
+    expect(() => deserializeEvent(envelope("message.completed", {
+      ...identity,
+      role: "assistant",
+      content: "hello",
+      finishReason: "stop",
+    }))).toThrow(EventSchemaError);
+  });
+
+  it("rejects empty or out-of-order-shaped message deltas", () => {
+    expect(() => deserializeEvent(envelope("message.delta", {
+      ...identity,
+      requestId: "req-1",
+      role: "assistant",
+      sequence: -1,
+      delta: "",
+    }))).toThrow(EventSchemaError);
+  });
+
+  it("requires compaction to reduce context and token counts to be paired", () => {
+    const compacted = {
+      runId: "run-1",
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      summaryMessageId: "msg-summary-1",
+      summary: "summary",
+      beforeMessages: 4,
+      afterMessages: 4,
+      beforeTokens: 100,
+    };
+    expect(() => deserializeEvent(envelope("context.compacted", compacted))).toThrow(EventSchemaError);
+  });
+
+  it("rejects empty or oversized steering messages and unknown terminal statuses", () => {
+    expect(() => deserializeEvent(envelope("steering.queued", {
+      ...identity,
+      content: "",
+    }))).toThrow(EventSchemaError);
+
+    expect(() => deserializeEvent(envelope("steering.queued", {
+      ...identity,
+      content: "x".repeat(256 * 1024 + 1),
+    }))).toThrow(EventSchemaError);
+
+    expect(() => deserializeEvent(envelope("turn.completed", {
+      runId: "run-1",
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      status: "paused",
+      modelRequests: 1,
+      toolCalls: 0,
+    }))).toThrow(EventSchemaError);
   });
 });
 

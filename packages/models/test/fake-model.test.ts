@@ -1,12 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { FakeModel } from "../src";
-import { estimateTokens, type Usage } from "../src/model";
+import {
+  estimateTokens,
+  MAX_MODEL_TEXT_DELTA_CHARS,
+  type ModelEvent,
+  type ModelRequest,
+  type Usage,
+} from "../src/model";
 
 const usage = (n: number): Usage => ({
   promptTokens: n,
   completionTokens: n,
   totalTokens: n * 2,
 });
+
+async function collect(events: AsyncIterable<ModelEvent>): Promise<ModelEvent[]> {
+  const collected: ModelEvent[] = [];
+  for await (const event of events) collected.push(event);
+  return collected;
+}
 
 describe("FakeModel", () => {
   it("replays queued turns in order and then acks", async () => {
@@ -61,5 +73,143 @@ describe("FakeModel", () => {
     expect(model.requests).toHaveLength(2);
     expect(model.requests[0]?.messages[0]?.content).toBe("a");
     expect(model.requests[1]?.messages[0]?.content).toBe("b");
+  });
+
+  it("streams scripted text chunks in order and completes with their exact content", async () => {
+    const model = new FakeModel([
+      {
+        content: "hello",
+        textDeltas: ["he", "ll", "o"],
+        usage: usage(2),
+      },
+    ]);
+    const signal = new AbortController().signal;
+    const request: ModelRequest = {
+      messages: [{ role: "user", content: "say hello" }],
+      tools: [],
+      model: "fake-override",
+      maxTokens: 20,
+      system: "be concise",
+      providerOptions: { temperature: 0 },
+      signal,
+    };
+
+    const events = await collect(model.stream(request));
+
+    expect(events).toEqual([
+      { type: "text.delta", delta: "he" },
+      { type: "text.delta", delta: "ll" },
+      { type: "text.delta", delta: "o" },
+      {
+        type: "response.completed",
+        response: {
+          id: "fake-1",
+          content: "hello",
+          toolCalls: [],
+          usage: usage(2),
+          finishReason: "stop",
+        },
+      },
+    ]);
+    expect(model.requests).toEqual([request]);
+    expect(model.requests[0]?.signal).toBe(signal);
+  });
+
+  it("derives completed content from scripted chunks when content is omitted", async () => {
+    const model = new FakeModel([{ textDeltas: ["a", "b", "c"] }]);
+
+    const events = await collect(model.stream({ messages: [] }));
+
+    expect(events.map((event) => event.type)).toEqual([
+      "text.delta",
+      "text.delta",
+      "text.delta",
+      "response.completed",
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      type: "response.completed",
+      response: { content: "abc" },
+    });
+  });
+
+  it("omits empty chunks while preserving completed content", async () => {
+    const model = new FakeModel([
+      { content: "ab", textDeltas: ["", "a", "", "b", ""] },
+    ]);
+
+    const events = await collect(model.stream({ messages: [] }));
+
+    expect(events).toMatchObject([
+      { type: "text.delta", delta: "a" },
+      { type: "text.delta", delta: "b" },
+      { type: "response.completed", response: { content: "ab" } },
+    ]);
+  });
+
+  it("splits oversized chunks at the canonical event-safe boundary", async () => {
+    const content = "x".repeat(MAX_MODEL_TEXT_DELTA_CHARS + 1);
+    const model = new FakeModel([{ content }]);
+
+    const events = await collect(model.stream({ messages: [] }));
+    const deltas = events.flatMap((event) =>
+      event.type === "text.delta" ? [event.delta] : []
+    );
+
+    expect(deltas.map((delta) => delta.length)).toEqual([
+      MAX_MODEL_TEXT_DELTA_CHARS,
+      1,
+    ]);
+    expect(deltas.join("")).toBe(content);
+    expect(events.at(-1)).toMatchObject({
+      type: "response.completed",
+      response: { content },
+    });
+  });
+
+  it("observes cancellation between streamed events and omits completion", async () => {
+    const model = new FakeModel([
+      { content: "ab", textDeltas: ["a", "b"] },
+    ]);
+    const controller = new AbortController();
+    const reason = new Error("cancelled by test");
+    const iterator = model
+      .stream({ messages: [], signal: controller.signal })
+      [Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { type: "text.delta", delta: "a" },
+    });
+    controller.abort(reason);
+
+    await expect(iterator.next()).rejects.toBe(reason);
+  });
+
+  it("closes cleanly when a consumer abandons the stream", async () => {
+    const model = new FakeModel([
+      { content: "ab", textDeltas: ["a", "b"] },
+    ]);
+    const iterator = model.stream({ messages: [] })[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { type: "text.delta", delta: "a" },
+    });
+    await expect(iterator.return!(undefined)).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    await expect(iterator.next()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+  });
+
+  it("rejects inconsistent scripted chunks instead of emitting divergent content", async () => {
+    const model = new FakeModel([{ content: "ab", textDeltas: ["not-ab"] }]);
+
+    await expect(collect(model.stream({ messages: [] }))).rejects.toThrow(
+      "scripted text deltas must concatenate to response content",
+    );
   });
 });

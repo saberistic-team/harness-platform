@@ -1,0 +1,64 @@
+id: m6-kernel-contracts
+title: "Add minimal-kernel runtime contracts and event vocabulary"
+goal: >
+  Add the compatibility-first contracts and events for the Pi-like minimal
+  runtime: a first-class async event stream, a deterministic streaming model
+  adapter, a no-tool text turn, durable append-before-yield ordering, and
+  lifecycle controls, without replacing the existing kernel, model, tool,
+  workspace, or session APIs.
+
+acceptance:
+  - new turn, message, steering, and compaction events use the canonical harness
+    envelope, round-trip stably, reject malformed input with typed errors, and
+    are documented in EVENTS.md before runtime consumers use them
+  - tool.call, policy.decision, and tool.result remain the sole canonical names
+    for requested tool intent, policy outcome, and completed tool work
+  - AgentRuntime, ModelAdapter, Tool, EventStore, and Workspace target contracts
+    are exported additively with caller-known run, session, and turn identities
+  - the minimal EventStore contract is documented as a session-facing adapter
+    over SessionStore rather than a competing persistence implementation
+  - a deterministic streaming fake model and a legacy Model.complete adapter
+    preserve existing FakeModel and Model callers
+  - a deterministic no-tool turn durably appends each event before yielding it
+    and produces one exact canonical sequence
+  - append failure stops the runtime before the failed event is yielded and
+    before the next model boundary is crossed
+  - steering is durable before steer returns, unknown and terminal run ids are
+    typed errors, cancellation is idempotent, and iterator abandonment cancels
+    the active run
+  - existing public APIs remain compatible and all default tests stay offline
+  - pnpm test and pnpm typecheck are green
+
+allowed_paths:
+  - packages/events/**
+  - packages/kernel/**
+  - packages/models/**
+  - ARCHITECTURE.md
+  - EVENTS.md
+  - tasks/m6-kernel-contracts.yaml
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test": allow
+    "pnpm typecheck": allow
+    "pnpm --filter @harness/events test": allow
+    "pnpm --filter @harness/kernel test": allow
+    "pnpm --filter @harness/models test": allow
+    "pnpm harness validate tasks/m6-kernel-contracts.yaml": allow
+    "pnpm harness run tasks/m6-kernel-contracts.yaml": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git diff*": allow
+    "git log*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 200
+
+delivery:
+  type: pull_request
