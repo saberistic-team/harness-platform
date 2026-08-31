@@ -1,0 +1,71 @@
+id: m0-exit-gate-hardening
+title: "Harden the bootstrap exit gate"
+goal: >
+  Make the bootstrap workflow trustworthy end to end: validate one task
+  manifest, prepare and verify its exact task branch, run an injected or
+  upstream-Pi builder, enforce allowed_paths across committed and working-tree
+  changes before and after tests, audit every policy decision with task/session
+  provenance, and produce a structured report for every manifest, git, policy,
+  builder, and test outcome.
+
+acceptance:
+  - local runs create or check out exactly tasks/<id>, reject unrelated
+    branches, and CI detached-HEAD runs require a matching branch label and
+    verified head commit
+  - allowed_paths covers committed changes from a verified base plus staged,
+    unstaged, untracked, deleted, copied, and renamed paths
+  - the path boundary is evaluated before tests and again afterward so a test
+    cannot leave an out-of-scope mutation behind a passing report
+  - invalid manifests and git-preflight failures return validated structured
+    report evidence with typed failure details and error events
+  - allow, ask, and deny policy decisions are emitted and carry task and
+    session provenance through the durable audit stream
+  - a bootstrap command runs a manifest-driven builder between branch
+    preparation and verification; the default adapter invokes upstream Pi
+    without a shell and deterministic tests use an injected offline builder
+  - pull-request CI verifies the task manifest matching its tasks/<id> branch,
+    the checked-out head commit, and committed changes relative to the base
+  - new or extended event and report fields round-trip and are documented
+  - all default tests remain deterministic and offline
+  - pnpm test, pnpm typecheck, and pnpm evals are green
+
+allowed_paths:
+  - .github/workflows/ci.yaml
+  - .gitignore
+  - apps/cli/**
+  - packages/events/**
+  - packages/sdk/**
+  - AGENTS.md
+  - ARCHITECTURE.md
+  - EVENTS.md
+  - README.md
+  - ROADMAP.md
+  - SECURITY.md
+  - tasks/m0-exit-gate-hardening.yaml
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test": allow
+    "pnpm typecheck": allow
+    "pnpm evals": allow
+    "pnpm harness validate tasks/m0-exit-gate-hardening.yaml": allow
+    "pnpm harness run tasks/m0-exit-gate-hardening.yaml": allow
+    "pnpm --filter @harness/cli test": allow
+    "pnpm --filter @harness/events test": allow
+    "pnpm --filter @harness/sdk test": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git diff*": allow
+    "git log*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 180
+
+delivery:
+  type: pull_request
