@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FakeModel } from "../src";
 import {
   estimateTokens,
+  MAX_MODEL_TEXT_DELTA_CHARS,
   type ModelEvent,
   type ModelRequest,
   type Usage,
@@ -128,6 +129,40 @@ describe("FakeModel", () => {
     expect(events.at(-1)).toMatchObject({
       type: "response.completed",
       response: { content: "abc" },
+    });
+  });
+
+  it("omits empty chunks while preserving completed content", async () => {
+    const model = new FakeModel([
+      { content: "ab", textDeltas: ["", "a", "", "b", ""] },
+    ]);
+
+    const events = await collect(model.stream({ messages: [] }));
+
+    expect(events).toMatchObject([
+      { type: "text.delta", delta: "a" },
+      { type: "text.delta", delta: "b" },
+      { type: "response.completed", response: { content: "ab" } },
+    ]);
+  });
+
+  it("splits oversized chunks at the canonical event-safe boundary", async () => {
+    const content = "x".repeat(MAX_MODEL_TEXT_DELTA_CHARS + 1);
+    const model = new FakeModel([{ content }]);
+
+    const events = await collect(model.stream({ messages: [] }));
+    const deltas = events.flatMap((event) =>
+      event.type === "text.delta" ? [event.delta] : []
+    );
+
+    expect(deltas.map((delta) => delta.length)).toEqual([
+      MAX_MODEL_TEXT_DELTA_CHARS,
+      1,
+    ]);
+    expect(deltas.join("")).toBe(content);
+    expect(events.at(-1)).toMatchObject({
+      type: "response.completed",
+      response: { content },
     });
   });
 

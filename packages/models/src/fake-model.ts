@@ -9,6 +9,7 @@ import {
   type ToolCall,
   type Usage,
   estimateTokens,
+  normalizeModelTextDeltas,
 } from "./model";
 
 /**
@@ -93,7 +94,9 @@ export class FakeModel implements Model, ModelAdapter {
     if (scriptedDeltaContent !== undefined && scriptedDeltaContent !== content) {
       throw new Error("scripted text deltas must concatenate to response content");
     }
-    const textDeltas = turn.textDeltas ?? (content.length > 0 ? [content] : []);
+    const textDeltas = normalizeModelTextDeltas(
+      turn.textDeltas ?? (content.length > 0 ? [content] : []),
+    );
     let usage: Usage;
 
     const prompt =

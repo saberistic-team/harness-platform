@@ -108,7 +108,19 @@ export interface CompletionResponse {
   finishReason: FinishReason;
 }
 
-/** An incremental assistant-text fragment, in provider delivery order. */
+/**
+ * Maximum JavaScript string length of one model text delta.
+ *
+ * This matches the canonical `message.delta` event payload boundary. Model
+ * adapters should omit empty provider chunks and split larger chunks before
+ * yielding them.
+ */
+export const MAX_MODEL_TEXT_DELTA_CHARS = 1024 * 1024;
+
+/**
+ * An incremental assistant-text fragment, in provider delivery order.
+ * `delta` must be nonempty and no longer than MAX_MODEL_TEXT_DELTA_CHARS.
+ */
 export interface ModelTextDeltaEvent {
   type: "text.delta";
   delta: string;
@@ -131,6 +143,26 @@ export type ModelEvent = ModelTextDeltaEvent | ModelResponseCompletedEvent;
 /** Async streaming model boundary owned by the minimal kernel. */
 export interface ModelAdapter {
   stream(request: ModelRequest): AsyncIterable<ModelEvent>;
+}
+
+/**
+ * Normalize provider text chunks to the ModelTextDeltaEvent contract without
+ * changing their concatenated content.
+ */
+export function normalizeModelTextDeltas(
+  deltas: readonly string[],
+): string[] {
+  const normalized: string[] = [];
+  for (const delta of deltas) {
+    for (
+      let offset = 0;
+      offset < delta.length;
+      offset += MAX_MODEL_TEXT_DELTA_CHARS
+    ) {
+      normalized.push(delta.slice(offset, offset + MAX_MODEL_TEXT_DELTA_CHARS));
+    }
+  }
+  return normalized;
 }
 
 export interface Model {
