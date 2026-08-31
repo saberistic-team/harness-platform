@@ -8,6 +8,7 @@ coverage/
 # Run reports are generated artifacts (the exit gate produces them).
 tasks/runs/*.json
 tasks/runs/*.jsonl
+tasks/runs/preflight/*.json
 
 # Local databases and artifacts
 *.sqlite

@@ -36,7 +36,7 @@ function samples(): Array<{ type: EventType; event: AnyHarnessEvent }> {
     { type: "tool.result", event: createEvent("tool.result", { callId: "call-1", tool: "read_file", ok: true, output: "hello", durationMs: 3 }, opts) },
     { type: "task.updated", event: createEvent("task.updated", { taskId: "kernel-0001", phase: "running", note: "started" }, opts) },
     { type: "budget.warning", event: createEvent("budget.warning", { taskId: "kernel-0001", metric: "tokens", used: 50_000, limit: 100_000, pct: 50 }, opts) },
-    { type: "policy.decision", event: createEvent("policy.decision", { action: "process.exec", subject: "pnpm test", effect: "allow", reason: "pattern pnpm test*", ruleId: "perm-1" }, opts) },
+    { type: "policy.decision", event: createEvent("policy.decision", { taskId: "kernel-0001", sessionId: "sess-1", runId: "run-1", action: "process.exec", subject: "pnpm test", effect: "allow", reason: "pattern pnpm test*", ruleId: "perm-1" }, opts) },
     { type: "permission.requested", event: createEvent("permission.requested", { permissionId: "perm-1", sessionId: "sess-1", callId: "call-1", action: "process.exec", subject: "pnpm install", scope: "once", reason: "operator approval required" }, opts) },
     { type: "permission.resolved", event: createEvent("permission.resolved", { permissionId: "perm-1", sessionId: "sess-1", callId: "call-1", action: "process.exec", subject: "pnpm install", scope: "once", decision: "deny", note: "operator denied" }, opts) },
     { type: "sandbox.started", event: createEvent("sandbox.started", { runId: "run-1", containerName: "ctr-1", image: "harness-sandbox:local", network: "none", mounts: 2 }, opts) },
@@ -47,7 +47,7 @@ function samples(): Array<{ type: EventType; event: AnyHarnessEvent }> {
     { type: "run.updated", event: createEvent("run.updated", { runId: "run-1", taskId: "kernel-0001", change: "completed", status: "passed", previousStatus: "running", version: 5, attempt: 1, fencingToken: 1, reportPath: "tasks/runs/report.json" }, opts) },
     { type: "artifact.registered", event: createEvent("artifact.registered", { artifactId: "artifact-1", kind: "audit", bucket: "harness", key: "audit/task/run.jsonl", sha256: "a".repeat(64), bytes: 42, contentType: "application/x-ndjson", taskId: "kernel-0001", runId: "run-1", sessionId: "sess-1" }, opts) },
     { type: "audit.exported", event: createEvent("audit.exported", { exportId: "export-1", artifactId: "artifact-1", fromSeq: 0, toSeq: 9, eventCount: 10, sha256: "a".repeat(64) }, opts) },
-    { type: "error", event: createEvent("error", { code: "MODEL_TIMEOUT", message: "timed out after 30s", retryable: true }, opts) },
+    { type: "error", event: createEvent("error", { code: "MODEL_TIMEOUT", message: "timed out after 30s", retryable: true, taskId: "kernel-0001", sessionId: "sess-1", runId: "run-1", stage: "builder" }, opts) },
   ];
 }
 
@@ -76,6 +76,36 @@ describe("event round-trip", () => {
     for (const { type, event } of samples()) {
       expect(eventSchemas[type].safeParse(event).success).toBe(true);
     }
+  });
+
+  it("continues to decode legacy policy decisions without attribution", () => {
+    const legacy = createEvent("policy.decision", {
+      action: "process.exec",
+      subject: "pnpm test",
+      effect: "allow",
+      reason: "legacy producer",
+    }, {
+      eventId: FIXED_ID,
+      at: FIXED_AT,
+      actor: "kernel",
+    });
+
+    expect(deserializeEvent(serializeEvent(legacy))).toEqual(legacy);
+  });
+
+  it("rejects partial policy-decision attribution", () => {
+    expect(() => deserializeEvent(JSON.stringify({
+      v: 1,
+      type: "policy.decision",
+      eventId: FIXED_ID,
+      at: FIXED_AT,
+      actor: "harness-cli",
+      data: {
+        taskId: "kernel-0001",
+        action: "process.exec",
+        effect: "allow",
+      },
+    }))).toThrow();
   });
 
   it("rejects semantically impossible run.updated transitions", () => {

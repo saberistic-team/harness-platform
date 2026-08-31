@@ -24,8 +24,8 @@ packages/workspace   Path scoping (escape-safe resolution)
 packages/mcp         MCP wire shapes + initialize-era stdio client (M2)
 packages/acp         Agent Client Protocol types (server in M3)
 packages/otel        Event stream -> OTel spans/metrics (M2; kernel/CLI -> collector)
-packages/sdk         Task manifest (input contract) + run report (output contract)
-apps/cli             Exit-gate CLI:  harness validate | harness run
+packages/sdk         Task manifest + normal/preflight report contracts
+apps/cli             Exit-gate CLI: harness validate | run | bootstrap
 apps/tui             Session viewer + interactive ACP permission client
 apps/web             UI client (task board; M2)
 services/*           control-plane, agent-server, sandbox-runner (M3+)
@@ -59,13 +59,40 @@ pnpm test                      # vitest, all packages
 pnpm typecheck                 # tsc strict across the workspace
 pnpm harness validate tasks/<id>.yaml
 pnpm harness run tasks/<id>.yaml
+pnpm harness bootstrap tasks/<id>.yaml --approve-write
 ```
+
+`run` requires the canonical `tasks/<id>.yaml` path and verifies that its
+validated id agrees with the exact `tasks/<id>` identity. Local mode switches
+to or creates that branch; only trusted CI tuple verification permits detached
+HEAD. When the manifest is itself changed, that path is checked against
+`allowed_paths` like every other changed path.
+`bootstrap` follows canonical task path + exact branch identity → validated
+manifest → TaskAgent → pre-test and post-test path gates → report. The
+production TaskAgent adapter targets upstream Pi. Deterministic integration
+tests inject a builder and exercise the streaming adapter with a spawned
+Pi-protocol fixture; they do not execute Pi or a live provider. `--approve-write`
+is the explicit resolution for `fs.write: ask`; Pi is launched without a shell in
+offline-startup, non-interactive mode, with only the fixed file tools `read`,
+`grep`, `find`, `ls`, `edit`, and `write`. Test commands also execute as argv
+without a shell.
+
+The Git gate records committed, staged, unstaged, ordinary untracked, and
+non-operational ignored changes, plus raw tracked byte/type/mode differences.
+It retains both endpoints of detected renames and copies, then rechecks scope
+after tests. `tasks/runs/**` is reserved evidence and is outside task scope even
+if `allowed_paths` contains `tasks/**`. PR CI selects the manifest matching the
+`tasks/<id>` head branch and must pass `--ci-head-ref`, `--head-sha`, and
+`--base-ref` together. Normal
+outcomes are `run-report/v2` (`run-report/v1` is legacy/read-only);
+malformed-manifest and early-Git failures are
+`run-preflight-report/v1`.
 
 ## Definition of done (for every task, no exceptions)
 
 - [ ] manifest in `tasks/` validated by `harness validate`
 - [ ] changes stay inside `allowed_paths`
 - [ ] `pnpm test` and `pnpm typecheck` are green
-- [ ] exit gate run: `harness run` → status `passed`
+- [ ] exit gate: `harness run` (or the gate in `bootstrap`) → status `passed`
 - [ ] run report (`tasks/runs/*.json`) linked in the PR description
 - [ ] event stream of the change documented in `EVENTS.md` if new types added

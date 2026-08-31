@@ -51,7 +51,7 @@ without touching it. That is the property the tests and evals exploit.
 
 ### L1 — Contracts (packages/)
 - `events` — the wire format. Fixed envelope, typed payloads, versioned.
-- `sdk` — the two external contracts: **task manifest in**, **run report out**.
+- `sdk` — **task manifest in**; normal and early-preflight reports out.
 - `policy` — pure decision functions over the manifest.
 - `models`, `tools`, `sessions`, `workspace`, `mcp`, `acp` — protocols.
 
@@ -66,8 +66,35 @@ without touching it. That is the property the tests and evals exploit.
   registry, audit export, and the production health/API boundary.
 
 ### L4 — Interfaces
-- `cli` (M0) — the exit gate + operator surface.
+- `cli` (M0) — `validate`, `run`, and `bootstrap` exit-gate surfaces.
 - `tui` (M3, done) / `web` (M2+) — event clients; the TUI also resolves asks.
+
+The CLI has one ordered execution contract. `run` resolves the canonical task
+path, selects its exact existing task branch when one is already present,
+validates the authoritative branch manifest (or validates before creating a
+new branch), attests the Git base and HEAD, gates a stable sampled task delta,
+runs the manifest-approved test command, gates the post-test delta, and writes
+a report. Local mode must be attached to the exact task branch after selection;
+a detached HEAD is accepted only by verified CI head-ref/head-SHA/base context.
+`bootstrap` inserts a `TaskAgent`
+builder before the test gate; its production adapter targets upstream Pi,
+launched without a shell in offline-startup, non-interactive mode with a fixed
+file-only tool set. Test commands are also parsed to one executable plus argv
+and never use a shell. Tests inject a `TaskAgent` and exercise the production
+streaming adapter with a spawned Pi-protocol fixture. They prove the harness
+composition and adapter contract, not an installed Pi binary or live provider.
+
+The snapshots preserve committed, staged, unstaged, ordinary untracked, and
+non-operational ignored evidence. The canonical manifest is not exempt when it
+is part of that delta: its exact path is checked by the same contract. Rename and
+copy records retain both source and destination; all write-relevant paths are
+checked against `allowed_paths`. Raw tracked bytes, path type, and executable
+mode are checked independently of Git clean filters. Git repository, HEAD,
+branch, manifest, per-worktree/common metadata, and scope are rechecked after
+the builder and tests. `tasks/runs/**` is reserved for evidence regardless of
+manifest scope. In pull-request CI the head branch chooses its matching
+manifest, and `--ci-head-ref`, `--head-sha`, and `--base-ref` must be provided
+as one trusted tuple.
 
 ## 3. Data & state
 
@@ -84,8 +111,23 @@ Rules:
   dogfooded tasks. The control plane stores a validated snapshot plus run
   history; its HTTP API trusts the authenticated admission caller and does not
   independently prove Git provenance.
-- Every policy decision and every run is an event → the **audit log
-  is the event log filtered**, not a separate store.
+- Every evaluated policy gate emits `policy.decision`; the **audit log is the
+  event log filtered**, not a separate store. Each atomically committed normal
+  report contains exactly one matching `run.recorded` receipt. An uncommitted
+  in-memory outcome deliberately contains none.
+- A normal attempt produces attestable `run-report/v2`; legacy `run-report/v1`
+  remains readable but cannot represent current gate evidence. A malformed-manifest or early-Git
+  attempt, before a complete normal report can be trusted, produces the strict
+  `run-preflight-report/v1` artifact instead.
+- The durable SQLite session contains causal gate events. A report is written
+  to a same-directory temporary file, synced, and atomically renamed; its
+  report-local `run.recorded` event is the commit receipt. This prevents either
+  SQLite or telemetry from claiming delivery of a missing report.
+  `deliverables.reportWritten` is false only when even fallback storage failed
+  and the CLI can return the validated artifact only in memory.
+- New normal reports enforce coherent branch/Git identity, path violations,
+  test and failure status, and report-commit receipt. `failure` is the primary
+  compatibility field; `failures` is the ordered complete failure trail.
 
 The scheduler is at-least-once and fenced. A queued run is claimed with a
 secret lease ID and a monotonically increasing fencing token. PostgreSQL time
@@ -129,15 +171,18 @@ registers that object, and only then advances its checkpoint.
 
 ## 5. Language strategy (deliberate constraint)
 
-One language — TypeScript, Node ≥ 22, pnpm workspaces — for L1–L4 in
-M0–M5. Reference harnesses (Rust/Go/Python/TS polyglots) are evidence
-of *where* complexity lives, not a mandate for *polyglotism*. A second
-runtime requires:
+One language — TypeScript, Node ≥ 22, pnpm workspaces — remains the default for
+L1–L4 through M5. Reference harnesses (Rust/Go/Python/TS polyglots) are evidence
+of *where* complexity lives, not a mandate for *polyglotism*. A second runtime
+may be introduced in M5 only when M3–M4 profiling supplies a hard, measured
+reason, and requires:
 
 1. a written profile showing the bottleneck (CPU-bound loop, kernel
    sandbox runtime, native crypto path…) with numbers,
 2. a task manifest justifying the change,
-3. review against `AGENTS.md`.
+3. a design note in this document defining the runtime boundary and measured
+   justification,
+4. review against `AGENTS.md`.
 
 ### M5 decision — retain TypeScript/Node
 
@@ -187,9 +232,16 @@ language preference alone remains insufficient evidence.
   quarantine must retain the inbound bytes itself before calling the decoder.
 - Policy: unknown action ⇒ `ask`; unknown subject without `*` ⇒
   closed by default for exec, ask for everything else.
-- Runner: any gate failure (schema/git/policy/test) ⇒ non-zero exit +
-  a structured report with status `failed|blocked`. A run either
-  *passes with evidence* or *fails loudly*.
+- Runner: any gate failure (manifest/git/policy/builder/tests/evidence/report)
+  ⇒ non-zero exit + structured evidence. Manifest and early-Git failures use
+  `run-preflight-report/v1`; normal outcomes use `run-report/v2` with status
+  `passed|failed|blocked`. A run either *passes with evidence* or *fails
+  loudly*.
+- Local exit-gate snapshots are repeatable samples, not an atomic filesystem
+  snapshot. The installed Git executable, preflight object database and
+  allow-listed mainish base commit, pre-existing repository configuration, and
+  a non-concurrently-mutated host workspace are trusted inputs. Preventive
+  isolation for untrusted work belongs to the Docker sandbox-runner.
 - Scheduler: leases expire → requeue only pre-execution work; started work →
   `indeterminate`. Stale fencing tokens are typed conflicts.
 - Restore: sequence gaps or future cursors are typed input errors. Session
@@ -200,8 +252,8 @@ language preference alone remains insufficient evidence.
 ## 7. Testing & evaluation
 
 - Unit: each package is self-contained (`packages/*/test`).
-- Integration: the exit gate (`harness run`) IS the integration test
-  for the harness itself.
+- Integration: the exit gate (`harness run`, including the gate used by
+  `harness bootstrap`) IS the integration test for the harness itself.
 - Evals (`evals/`): golden repos + scenarios assert on **events and
   reports**, never internals — so refactorings stay safe and regressions
   are about behavior, not structure.

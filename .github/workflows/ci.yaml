@@ -3,7 +3,7 @@
 #
 #   pnpm test
 #   pnpm typecheck
-#   harness run tasks/kernel-0001.yaml
+#   harness run tasks/<id>.yaml (pull requests only)
 #
 # Mark this workflow's `gate` job as REQUIRED (branch protection) so
 # no PR merges without it. CI also provides the delivery link
@@ -39,6 +39,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The exit gate compares every committed task change with the PR
+          # base, so it needs complete history and the exact advertised head.
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup pnpm (pinned)
         uses: pnpm/action-setup@v4
@@ -63,8 +68,26 @@ jobs:
       - name: Golden-kernel scenarios (evals run the kernel)
         run: pnpm evals
 
-      - name: Exit gate — tasks/kernel-0001.yaml
-        run: pnpm harness run tasks/kernel-0001.yaml --branch "${{ github.head_ref }}"
+      - name: Exit gate — manifest matching the task branch
+        # Run even when an earlier quality check fails: the harness owns the
+        # structured test/preflight report and the final upload is evidence.
+        if: always() && github.event_name == 'pull_request'
+        env:
+          TASK_HEAD_REF: ${{ github.head_ref }}
+          TASK_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TASK_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Keep invalid branch names inside the harness failure path too. For
+          # example, feature/x maps to a missing/non-canonical nested manifest;
+          # a one-segment branch with a manifest reaches the exact-branch gate.
+          # Either way the CLI emits a structured preflight report before it
+          # returns failure, instead of this shell step exiting first.
+          task_id="${TASK_HEAD_REF#tasks/}"
+          manifest="tasks/${task_id}.yaml"
+          pnpm harness run "$manifest" \
+            --ci-head-ref "$TASK_HEAD_REF" \
+            --head-sha "$TASK_HEAD_SHA" \
+            --base-ref "$TASK_BASE_SHA"
         # CI provides the PR URL via HARNESS_PULL_REQUEST_URL above;
         # it lands in deliverables.pullRequest of the report.
 

@@ -51,18 +51,18 @@ Rules:
 | `tool.result`    | a tool returns (ok or error)            | `callId`, `ok`, `output|error`    |
 | `task.updated`   | a manifest's phase changes              | `taskId`, `phase`                 |
 | `budget.warning` | a budget threshold is crossed           | `metric`, `used`, `limit`, `pct`  |
-| `policy.decision`| policy engine rules on an action        | `action`, `effect`, `reason`      |
+| `policy.decision`| policy engine rules on an action        | `taskId?`, `sessionId?`, `runId?`, `action`, `effect`, `reason` |
 | `permission.requested` | an `ask` pauses before a side effect | `permissionId`, `sessionId`, `action`, `scope` |
 | `permission.resolved` | an operator resolves one pending ask | `permissionId`, `decision`, `scope` |
 | `sandbox.started` | a completed Docker run proves an owned container existed | `runId`, `containerName`, `image`, `network`, `mounts` |
 | `sandbox.stopped` | execution ends and owned-container cleanup is verified | `runId`, `containerName`, `status`, `exitCode?`, `durationMs` |
-| `run.recorded`   | a run report is written                 | `runId`, `taskId`, `status`, `reportPath` |
+| `run.recorded`   | a run report is atomically committed    | `runId`, `taskId`, `status`, `reportPath` |
 | `run.scheduled`  | the control plane admits a queued run   | `runId`, `taskId`, `attempt`, `manifestDigest` |
 | `run.leased`     | a worker receives a fenced run lease    | `runId`, `workerId`, `fencingToken`, `expiresAt` |
 | `run.updated`    | a durable run mutation commits after leasing | `runId`, `change`, `status`, `previousStatus`, `version` |
 | `artifact.registered` | immutable object metadata is committed after upload | `artifactId`, `kind`, `bucket`, `key`, `sha256`, `bytes` |
 | `audit.exported` | an audit JSONL segment and checkpoint are committed | `exportId`, `artifactId`, `fromSeq`, `toSeq`, `eventCount` |
-| `error`          | a fatal error with a code               | `code`, `message`, `retryable?`   |
+| `error`          | a fatal error with a code               | `taskId?`, `sessionId?`, `runId?`, `stage?`, `code`, `message`, `retryable?` |
 
 ## Versioning
 
@@ -105,6 +105,61 @@ tool.result
 Missing resolvers, EOF, disconnects, cancellation, and timeouts resolve as
 denial. The agent-server redacts sensitive tool and permission payloads before
 events are persisted or sent over ACP.
+
+## Exit-gate decisions and failure evidence
+
+The CLI emits a `policy.decision` for every gate it actually evaluates,
+including successful `allow` decisions. An `ask` or `deny` is evidence before
+the headless run stops; it is never represented only by the final report. The
+CLI action vocabulary is:
+
+| action | decision represented |
+| ------ | -------------------- |
+| `git.branch` | the checkout and requested task branch identify the same task |
+| `workspace.path_scope` | all observed changed paths are inside the manifest's `allowed_paths` boundary |
+| `fs.read` | the manifest permits the builder to read its scoped workspace |
+| `fs.write` | the manifest permits, denies, or requires approval for builder writes |
+| `process.exec` | the manifest permits, denies, or requires approval for the concrete test process |
+
+New CLI-produced policy decisions carry `taskId`, `sessionId`, and `runId` so
+the standalone event remains attributable after global audit export. The
+payload accepts either that complete tuple or no attribution tuple at all;
+partial attribution is invalid. The unattributed alternative exists only for
+historical and non-task producers. A CLI attempt must not omit identities.
+
+CLI failures emit `error` with the same available attribution. Its optional
+`stage` has this closed vocabulary:
+
+| stage | boundary that failed |
+| ----- | -------------------- |
+| `manifest` | manifest read, YAML parsing, or task-schema validation |
+| `git` | repository, branch, base, head, or changed-path discovery preflight |
+| `policy` | an evaluated policy gate blocked the run |
+| `builder` | the TaskAgent builder did not complete successfully |
+| `tests` | the configured verification process failed |
+| `evidence` | durable session or event evidence could not be persisted |
+| `report` | report construction, validation, or writing failed |
+
+A malformed manifest cannot provide a trusted task identity, and an early Git
+failure cannot provide all fields required by the normal report contract. Those
+attempts use the strict `run-preflight-report/v1` artifact. Manifest-stage
+failures may omit `task`; Git-stage failures normally include it, but may omit
+it when selecting an existing task branch fails before that branch's manifest
+can be read and validated. Normal policy, builder, test, evidence, and report
+outcomes use `run-report/v2`; legacy `run-report/v1` is read-only and not a
+current gate attestation. `failure` carries the primary compatibility
+failure and `failures` carries the ordered complete failure trail. New reports
+provide those fields together and enforce coherence among branch/Git identity,
+scope, tests, status, and the report receipt without invalidating historical v1
+reports. Builder evidence remains an additive field.
+
+For CLI attempts, SQLite contains the causal gate events. `run.recorded` is a
+report-local commit receipt included in the exact bytes that are atomically
+renamed into place, then forwarded to telemetry only after that rename
+succeeds. It is deliberately not inserted into SQLite first: the database and
+filesystem cannot share one transaction, and a pre-written receipt could claim
+a report that never existed. If every report destination fails,
+`deliverables.reportWritten` is false and no `run.recorded` event is emitted.
 
 ## Scheduling and replay ordering
 
