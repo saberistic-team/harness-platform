@@ -1,0 +1,50 @@
+id: m5-polyglot-review
+title: "M5 conditional polyglot review"
+goal: >
+  Complete the ROADMAP M5 language gate by auditing the repository-backed
+  M3-M4 performance evidence against the architecture's second-runtime
+  requirements, recording the decision and its evidence in the architecture,
+  and retaining the TypeScript/Node runtime unless a hard, measured,
+  attributable bottleneck justifies otherwise.
+
+acceptance:
+  - the review distinguishes component profiling from correctness-test and
+    exit-gate timings and records the M3-M4 evidence that is present or absent
+  - ARCHITECTURE.md records the M5 language decision, its limits, and the
+    evidence required to reopen the second-runtime gate
+  - no second runtime is introduced without a representative workload,
+    numeric bottleneck attribution, and evidence that the runtime is the
+    constraint rather than I/O, an algorithm, or an external dependency
+  - ROADMAP.md and README.md consistently report the completed M5 outcome
+  - the review remains compliant with the one-language, events-first,
+    offline-test, pure-policy, typed-error, and hard-budget rules in AGENTS.md
+  - pnpm test and pnpm typecheck are green
+
+allowed_paths:
+  - ARCHITECTURE.md
+  - README.md
+  - ROADMAP.md
+  - tasks/m5-polyglot-review.yaml
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test": allow
+    "pnpm typecheck": allow
+    "pnpm harness validate tasks/m5-polyglot-review.yaml": allow
+    "pnpm harness run tasks/m5-polyglot-review.yaml": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git diff*": allow
+    "git log*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 60000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request

@@ -101,10 +101,15 @@ does not grant Kubernetes API credentials or materialize Jobs; a future executor
 overlay must add that privilege together with workspace staging and policy-safe
 template substitution.
 
-## M5 — Polyglot review (conditional)
-- Only if M3–M4 profiling produces a hard, measured reason do we add a
-  second runtime. The justification is a profile + a task manifest + a
-  design note in `ARCHITECTURE.md`, per the language strategy there.
+## M5 — Polyglot review (conditional)  ✅ (`tasks/m5-polyglot-review`)
+- The repository-backed M3–M4 evidence contains correctness gates and
+  observability seams, but no component profile that attributes a hard
+  bottleneck to the Node runtime. Whole-suite test duration is not such a
+  profile.
+- Decision: retain TypeScript / Node ≥ 22 as the only runtime. No second runtime
+  or service boundary is added.
+- The decision can be reopened only by a new manifest and a reproducible,
+  numeric profile meeting the language-strategy criteria in `ARCHITECTURE.md`.
 
 ## Explicit non-goals (M0–M5)
 - No microservice decomposition of the kernel (it is a library)
