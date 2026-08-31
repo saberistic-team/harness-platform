@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Thin launcher: run the TS entrypoint with the tsx loader (same
-// pattern as apps/cli) so the workspace stays build-free.
+// Thin launcher for the stored-event viewer and interactive ACP client. Run
+// the TS entrypoint with tsx so the workspace stays build-free.
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 

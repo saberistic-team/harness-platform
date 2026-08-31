@@ -48,6 +48,10 @@ Rules:
 | `task.updated`   | a manifest's phase changes              | `taskId`, `phase`                 |
 | `budget.warning` | a budget threshold is crossed           | `metric`, `used`, `limit`, `pct`  |
 | `policy.decision`| policy engine rules on an action        | `action`, `effect`, `reason`      |
+| `permission.requested` | an `ask` pauses before a side effect | `permissionId`, `sessionId`, `action`, `scope` |
+| `permission.resolved` | an operator resolves one pending ask | `permissionId`, `decision`, `scope` |
+| `sandbox.started` | a completed Docker run proves an owned container existed | `runId`, `containerName`, `image`, `network`, `mounts` |
+| `sandbox.stopped` | execution ends and owned-container cleanup is verified | `runId`, `containerName`, `status`, `exitCode?`, `durationMs` |
 | `run.recorded`   | a run report is written                 | `runId`, `taskId`, `status`, `reportPath` |
 | `error`          | a fatal error with a code               | `code`, `message`, `retryable?`   |
 
@@ -72,3 +76,30 @@ Consumers must:
    third-party MCP server) — schema-validate before using.
 3. Log unknown-but-valid events to the audit trail, not discard them
    (they are evidence).
+
+## Permission ordering
+
+An interactive `ask` has one canonical event order:
+
+```text
+tool.call
+policy.decision (effect=ask)
+permission.requested
+... kernel is paused; the tool has not executed ...
+permission.resolved (decision=allow|deny)
+tool.result
+```
+
+`permissionId` is single-use and scoped to its `sessionId`. A hard policy
+`deny` cannot be overridden and therefore emits no permission request.
+Missing resolvers, EOF, disconnects, cancellation, and timeouts resolve as
+denial. The agent-server redacts sensitive tool and permission payloads before
+events are persisted or sent over ACP.
+
+`sandbox.started` is deliberately conservative: it is emitted after `docker
+run` returns only when the runner has an owned container ID and Docker did not
+report its reserved infrastructure-failure status. It does not claim a health
+check passed, and its event timestamp is therefore an audit-confirmation time,
+not the container's exact start time. `sandbox.stopped` follows only after
+cleanup removes that owned container or verifies it is already absent. Cleanup
+failure emits a typed `error` event and deliberately omits `sandbox.stopped`.

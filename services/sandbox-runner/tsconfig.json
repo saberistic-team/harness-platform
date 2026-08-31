@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "paths": {
+      "@harness/events": ["packages/events/src/index.ts"],
+      "@harness/policy": ["packages/policy/src/index.ts"],
+      "@harness/sdk": ["packages/sdk/src/index.ts"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "vitest.config.ts"
+  ]
+}

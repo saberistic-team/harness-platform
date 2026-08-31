@@ -1,0 +1,79 @@
+id: m3-services
+title: "M3 agent services, sandbox boundary, provider model, and interactive TUI"
+goal: >
+  Complete the ROADMAP M3 service milestone as one end-to-end permissioned
+  execution path: ACP clients create exactly one kernel run per session over
+  WebSocket, policy `ask` decisions pause for an explicit operator response,
+  the Docker sandbox runner derives a fail-closed container boundary from the
+  task manifest, and an OpenAI-compatible provider adapter remains swappable
+  behind the existing model protocol.
+
+acceptance:
+  - the agent server speaks typed ACP JSON-RPC over WebSocket, streams validated
+    harness events, and rejects a second prompt for the same session
+  - kernel tool authorization emits policy and permission events, blocks denied
+    calls, and never treats an unresolved `ask` decision as allowed
+  - the interactive TUI can create an ACP session, stream events, answer each
+    permission request allow or deny, and render the final response
+  - the sandbox runner launches one ephemeral Docker container per run with a
+    read-only workspace, writable submounts only for allowed_paths, dropped
+    privileges, and `--network none` unless policy explicitly allows network
+  - process execution, filesystem write access, and network access are decided
+    through the compiled manifest rules before Docker is invoked
+  - the OpenAI-compatible model adapter maps chat completions, tool calls,
+    finish reasons, usage, timeouts, and provider errors into typed model values
+  - provider and sandbox tests are deterministic and offline; Docker and a live
+    model endpoint are not required by the default test lane
+  - tool event payloads are redacted before the agent server sends them across
+    the WebSocket process boundary
+  - new permission event types are round-tripped and documented in EVENTS.md
+  - pnpm test and pnpm typecheck are green
+
+allowed_paths:
+  - packages/acp/**
+  - packages/events/**
+  - packages/kernel/**
+  - packages/models/**
+  - packages/tools/**
+  - services/agent-server/**
+  - services/sandbox-runner/**
+  - apps/cli/**
+  - apps/tui/**
+  - infra/docker/**
+  - AGENTS.md
+  - ARCHITECTURE.md
+  - EVENTS.md
+  - README.md
+  - ROADMAP.md
+  - SECURITY.md
+  - pnpm-lock.yaml
+  - vitest.config.ts
+  - tasks/**
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test": allow
+    "pnpm typecheck": allow
+    "pnpm harness validate tasks/m3-services.yaml": allow
+    "pnpm harness run tasks/m3-services.yaml": allow
+    "pnpm --filter @harness/models test": allow
+    "pnpm --filter @harness/kernel test": allow
+    "pnpm --filter @harness/agent-server test": allow
+    "pnpm --filter @harness/sandbox-runner test": allow
+    "pnpm --filter @harness/tui test": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git diff*": allow
+    "git log*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 180
+
+delivery:
+  type: pull_request

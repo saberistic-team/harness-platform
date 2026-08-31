@@ -5,5 +5,25 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "bin": {
+    "harness-agent-server": "./bin/agent-server.js"
+  },
+  "dependencies": {
+    "@harness/acp": "workspace:*",
+    "@harness/events": "workspace:*",
+    "@harness/kernel": "workspace:*",
+    "@harness/models": "workspace:*",
+    "@harness/policy": "workspace:*",
+    "@harness/sandbox-runner": "workspace:*",
+    "@harness/sdk": "workspace:*",
+    "@harness/sessions": "workspace:*",
+    "@harness/tools": "workspace:*",
+    "@harness/workspace": "workspace:*",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0"
   }
 }

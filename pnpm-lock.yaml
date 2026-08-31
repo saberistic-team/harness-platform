@@ -48,6 +48,9 @@ importers:
 
   apps/tui:
     dependencies:
+      '@harness/acp':
+        specifier: workspace:*
+        version: link:../../packages/acp
       '@harness/events':
         specifier: workspace:*
         version: link:../../packages/events
@@ -109,7 +112,14 @@ importers:
         specifier: ^4.19.0
         version: 4.23.12
 
-  packages/acp: {}
+  packages/acp:
+    dependencies:
+      '@harness/events':
+        specifier: workspace:*
+        version: link:../events
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
 
   packages/events:
     dependencies:
@@ -138,7 +148,11 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
 
-  packages/models: {}
+  packages/models:
+    dependencies:
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
 
   packages/otel:
     dependencies:
@@ -208,11 +222,62 @@ importers:
 
   packages/workspace: {}
 
-  services/agent-server: {}
+  services/agent-server:
+    dependencies:
+      '@harness/acp':
+        specifier: workspace:*
+        version: link:../../packages/acp
+      '@harness/events':
+        specifier: workspace:*
+        version: link:../../packages/events
+      '@harness/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+      '@harness/models':
+        specifier: workspace:*
+        version: link:../../packages/models
+      '@harness/policy':
+        specifier: workspace:*
+        version: link:../../packages/policy
+      '@harness/sandbox-runner':
+        specifier: workspace:*
+        version: link:../sandbox-runner
+      '@harness/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      '@harness/sessions':
+        specifier: workspace:*
+        version: link:../../packages/sessions
+      '@harness/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+      '@harness/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.12
 
   services/control-plane: {}
 
-  services/sandbox-runner: {}
+  services/sandbox-runner:
+    dependencies:
+      '@harness/events':
+        specifier: workspace:*
+        version: link:../../packages/events
+      '@harness/policy':
+        specifier: workspace:*
+        version: link:../../packages/policy
+      '@harness/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
 
 packages:
 

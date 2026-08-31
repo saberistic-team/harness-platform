@@ -8,7 +8,11 @@ import {
   SessionStoreError,
 } from "@harness/sessions";
 import { validateRunReport, type RunReport } from "@harness/sdk";
-import { renderSession } from "./render";
+import {
+  renderSession,
+  sanitizeTerminalText,
+  terminalSafeJson,
+} from "./render";
 
 /**
  * The read-only session/event viewer (M1). Loads from the SQLite
@@ -74,23 +78,27 @@ async function cmdList(ctx: ViewContext, dbArg?: string, flags?: Flags): Promise
   const dbPath = requireDb(cwd, dbArg ?? DEFAULT_DB);
   const sessions = listSessions(dbPath);
   if (sessions.length === 0) {
-    out(`(no sessions in ${dbPath})`);
+    out(sanitizeTerminalText(`(no sessions in ${dbPath})`));
     return 0;
   }
   const color = flags?.color ?? colorDefault(out);
   out(renderHeaderLine("SESSIONS", dbPath, color));
   for (const s of sessions) {
     out(
-      `${s.sessionId}  task=${s.taskId ?? "·"}  ${s.status}  ` +
-        `${s.eventCount} events  ${s.createdAt}${s.closedAt ? `  closed ${s.closedAt}` : ""}`,
+      sanitizeTerminalText(
+        `${s.sessionId}  task=${s.taskId ?? "·"}  ${s.status}  ` +
+          `${s.eventCount} events  ${s.createdAt}${s.closedAt ? `  closed ${s.closedAt}` : ""}`,
+      ),
     );
   }
   return 0;
 }
 
 function renderHeaderLine(title: string, sub: string, color: boolean): string {
-  const t = color ? `\u001b[1m${title}\u001b[0m` : title;
-  const s = color ? `\u001b[90m ${sub}\u001b[0m` : ` — ${sub}`;
+  const safeTitle = sanitizeTerminalText(title);
+  const safeSub = sanitizeTerminalText(sub);
+  const t = color ? `\u001b[1m${safeTitle}\u001b[0m` : safeTitle;
+  const s = color ? `\u001b[90m ${safeSub}\u001b[0m` : ` — ${safeSub}`;
   return `${t}${s}`;
 }
 
@@ -103,7 +111,7 @@ async function cmdShow(ctx: ViewContext, dbArg: string | undefined, flags: Flags
   if (!sessionId) {
     const latest = listSessions(dbPath)[0];
     if (!latest) {
-      out(`(no sessions in ${dbPath})`);
+      out(sanitizeTerminalText(`(no sessions in ${dbPath})`));
       return 1;
     }
     sessionId = latest.sessionId;
@@ -118,7 +126,7 @@ async function cmdShow(ctx: ViewContext, dbArg: string | undefined, flags: Flags
     const events = await store.log.slice(from, from + limit);
 
     if (flags.raw) {
-      for (const e of events) out(JSON.stringify(e));
+      for (const e of events) out(terminalSafeJson(e));
     } else {
       const header = `SESSION ${record.sessionId}  task=${record.taskId ?? "·"}  status=${record.status}  ${total} events (showing ${events.length})`;
       out(renderSession(header, events, { color: flags.color ?? colorDefault(out) }));
@@ -138,19 +146,19 @@ function cmdReport(ctx: ViewContext, reportArg: string, flags: Flags): number {
   try {
     doc = JSON.parse(readFileSync(p, "utf8"));
   } catch (e) {
-    err(`harness-view: cannot read report: ${(e as Error).message}`);
+    err(`harness-view: cannot read report: ${sanitizeTerminalText((e as Error).message)}`);
     return 2;
   }
   let report: RunReport;
   try {
     report = validateRunReport(doc);
   } catch (e) {
-    err((e as Error).message);
+    err(sanitizeTerminalText((e as Error).message));
     return 2;
   }
 
   const color = flags.color ?? colorDefault(out);
-  const kv = (k: string, v: string) => out(`${k.padEnd(12)} ${v}`);
+  const kv = (k: string, v: string) => out(sanitizeTerminalText(`${k.padEnd(12)} ${v}`));
   out(renderHeaderLine("RUN REPORT", p, color));
   kv("task", `${report.task.id} — ${report.task.title}`);
   kv("status", report.status);
@@ -181,9 +189,11 @@ function cmdReport(ctx: ViewContext, reportArg: string, flags: Flags): number {
   return 0;
 }
 
-export const HELP = `harness-view — read-only session & event viewer (M1)
+export const HELP = `harness-view — harness session viewer and interactive ACP client
 
 Usage:
+  harness-view connect <ws-url> --workspace <path> [--task id]
+                       [--model name] [--token value] [prompt words...]
   harness-view list [db]                 list stored sessions
   harness-view show [db] [--session id]  show a session's event stream
                                         [--from N] [--limit N] [--raw]
@@ -192,7 +202,10 @@ Usage:
 
 Defaults:
   db      tasks/runs/sessions.sqlite (relative to cwd)
-  session the most recently created one`;
+  session the most recently created one
+
+Set HARNESS_AGENT_TOKEN instead of --token to keep credentials out of shell
+history. Non-loopback connections require wss://.`;
 
 export async function runView(argv: string[], ctx: ViewContext = {}): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -214,12 +227,12 @@ export async function runView(argv: string[], ctx: ViewContext = {}): Promise<nu
     }
   } catch (e) {
     if (e instanceof SessionStoreError) {
-      (ctx.err ?? console.error)(`harness-view: ${e.message}`);
+      (ctx.err ?? console.error)(`harness-view: ${sanitizeTerminalText(e.message)}`);
       return 2;
     }
     throw e;
   }
-  (ctx.err ?? console.error)(`harness-view: unknown command "${cmd}"\n`);
+  (ctx.err ?? console.error)(`harness-view: unknown command "${sanitizeTerminalText(cmd)}"\n`);
   (ctx.out ?? console.log)(HELP);
   return 1;
 }

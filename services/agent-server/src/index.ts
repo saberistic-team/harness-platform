@@ -1,19 +1,15 @@
-/**
- * @harness/agent-server — hosts kernel runs and serves them over ACP.
- *
- * M0: placeholder service. Responsibilities (M3):
- *   - implements packages/acp over JSON-RPC (HTTP + WebSocket)
- *   - each ACP session = one kernel.runAgent loop
- *   - model adapters (packages/models) behind a provider config
- *   - OpenTelemetry traces per session; events are the spans' payload
- */
+export * from "./config";
+export * from "./connection";
+export * from "./server";
+export * from "./sandbox-tool";
+export * from "./websocket";
 
 export interface AgentServerStatus {
   service: "agent-server";
-  version: "0.0.0";
-  ready: false;
+  version: "0.3.0";
+  ready: true;
 }
 
 export function status(): AgentServerStatus {
-  return { service: "agent-server", version: "0.0.0", ready: false };
+  return { service: "agent-server", version: "0.3.0", ready: true };
 }

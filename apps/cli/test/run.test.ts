@@ -19,6 +19,7 @@ function makeRepo(files: Record<string, string> = {}): string {
   git(["init", "-q"]);
   git(["config", "user.email", "harness@test.local"]);
   git(["config", "user.name", "Harness Test"]);
+  git(["config", "commit.gpgsign", "false"]);
   for (const [path, content] of Object.entries(files)) {
     const full = join(dir, path);
     mkdirSync(dirname(full), { recursive: true });
@@ -223,6 +224,39 @@ describe("harness run (exit gate)", () => {
       expect(res.exitCode).toBe(1);
       expect(res.report.status).toBe("blocked");
       expect(res.report.tests).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks an unresolved ask in the headless exit gate", async () => {
+    const dir = makeRepo();
+    try {
+      writeFileSync(join(dir, "tasks.yaml"), [
+        "id: kernel-0004",
+        'title: "Ask stays closed"',
+        "goal: Never auto-approve headless commands",
+        "acceptance:",
+        "  - ask blocks",
+        "allowed_paths:",
+        "  - packages/**",
+        "permissions:",
+        "  process.exec: ask",
+        "  network: deny",
+        "delivery:",
+        "  type: none",
+      ].join("\n"));
+      const res = await runTask({
+        cwd: dir,
+        manifestPath: "tasks.yaml",
+        testCommand: GOOD_NODE_CMD,
+      });
+      expect(res.report.status).toBe("blocked");
+      expect(res.report.tests).toBeUndefined();
+      expect(res.report.events.some((wire) => {
+        const event = JSON.parse(wire) as { type: string; data?: { effect?: string } };
+        return event.type === "policy.decision" && event.data?.effect === "ask";
+      })).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

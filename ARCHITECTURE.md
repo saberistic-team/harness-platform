@@ -22,14 +22,19 @@ the packages; code that violates it is a bug.
                     └──────────────┼──────────────┘
                                    ▼
                           ┌─────────────────┐
-                          │   agent-server  │  ACP (JSON-RPC, streams)
+                          │   agent-server  │  ACP (JSON-RPC over WS)
                           └────────┬────────┘
                                    ▼
                           ┌─────────────────┐
-          tools ──────▶   │      KERNEL     │  ──▶  events (typed stream)
-          (sandboxed)     │  goal+model+    │
+          bounded ─────▶  │      KERNEL     │  ──▶  events (typed stream)
+          tools           │  goal+model+    │
                           │  tools+budget   │
                           └────────┬────────┘
+                                   │ process tool
+                                   ▼
+                          ┌─────────────────┐
+                          │ sandbox-runner  │  one hardened container
+                          └─────────────────┘
                                    ▼
                     ┌──────────────────────────────┐
                     │  artifacts · audit log ·      │
@@ -52,22 +57,22 @@ without touching it. That is the property the tests and evals exploit.
 
 ### L2 — Execution
 - `kernel` — the agent loop (M0, done).
-- `sandbox-runner` (M3) — container boundary for tool execution;
+- `sandbox-runner` (M3, done) — container boundary for tool execution;
   enforces policy *decisions*, never makes them.
 
 ### L3 — Services
-- `agent-server` (M3) — hosts kernel runs, serves ACP.
+- `agent-server` (M3, done) — hosts exactly one kernel run per ACP session.
 - `control-plane` (M4) — scheduling, state, artifact registry, audit.
 
 ### L4 — Interfaces
 - `cli` (M0) — the exit gate + operator surface.
-- `tui` (M3) / `web` (M2+) — ACP clients; render the event stream.
+- `tui` (M3, done) / `web` (M2+) — event clients; the TUI also resolves asks.
 
 ## 3. Data & state
 
 | Data              | M0–M2                 | M4+                        |
 | ----------------- | --------------------- | -------------------------- |
-| sessions/events   | SQLite (file-local)   | Postgres (control-plane)   |
+| sessions/events   | SQLite (file-local, through M3) | Postgres (control-plane) |
 | artifacts/reports | local dir + MinIO     | S3                         |
 | task state        | manifest files in git | Postgres + git is truth    |
 | observability     | OpenTelemetry (local collector / Jaeger) — from day 1 |
@@ -82,9 +87,10 @@ Rules:
 ## 4. Protocols
 
 - **ACP** (we own the shape in `packages/acp`): agent ↔ client,
-  JSON-RPC over WebSocket/HTTP, event streaming, permission negotiation.
+  JSON-RPC over WebSocket, event streaming, permission negotiation.
   It is *our* protocol, deliberately small; we do not adopt a foreign
-  agent protocol wholesale.
+  agent protocol wholesale. M3 is WebSocket-first and does not advertise
+  replay/resume; that stateful capability remains M4.
 - **MCP** (`packages/mcp`): model context / third-party tool servers.
   We are a client of MCP servers (tools arrive over MCP), not a server
   of our own protocol in disguise.
@@ -107,6 +113,12 @@ runtime requires:
 
 - Kernel: budget exceeded → `budget_exceeded` stop + event trail (never
   hangs, never silently continues).
+- Permissioning: `ask` pauses before execution; only a correlated explicit
+  allow resumes. Missing resolver, denial, timeout, cancellation, or disconnect
+  produces a denied tool result.
+- Sandbox: policy is compiled before Docker starts; unsafe or unrepresentable
+  path/network rules fail closed instead of being widened. The Docker daemon,
+  selected image, and non-concurrent host workspace are trusted launch inputs.
 - Event deserialization: version/type/payload are three distinct typed
   errors; unknown frames are quarantined with raw preserved.
 - Policy: unknown action ⇒ `ask`; unknown subject without `*` ⇒

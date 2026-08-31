@@ -6,6 +6,7 @@ export default defineConfig({
     include: [
       "packages/*/test/**/*.test.ts",
       "apps/*/test/**/*.test.ts",
+      "services/*/test/**/*.test.ts",
       "evals/**/*.test.ts",
     ],
     reporters: ["default"],

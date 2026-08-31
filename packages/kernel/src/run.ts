@@ -1,24 +1,22 @@
+import { createEvent, type AnyHarnessEvent } from "@harness/events";
 import {
-  createEvent,
-  type AnyHarnessEvent,
-} from "@harness/events";
-import {
+  addUsage,
+  emptyUsage,
   type ChatMessage,
   type Model,
+  type ToolDefinition,
   type Usage,
 } from "@harness/models";
-import { ToolRegistry } from "@harness/tools";
+import {
+  ToolRegistry,
+  type ToolPermissionIntent,
+} from "@harness/tools";
 import { randomUUID } from "node:crypto";
 
 /**
- * The kernel is the language-level agent loop. It deliberately knows
- * nothing about network, storage, or hosting:
- *
- *   goal + model + tools + budget  ──>  event stream + final text
- *
- * Everything observable is emitted as a typed harness event, so the
- * same loop can run locally, in the sandbox, or in the eval harness
- * with zero code changes.
+ * The kernel is the language-level agent loop. It knows no transport, storage,
+ * policy implementation, or terminal UI. Those boundaries inject decisions
+ * and permission resolution while the kernel owns ordering and enforcement.
  */
 
 export interface Budget {
@@ -40,15 +38,195 @@ export class BudgetExceededError extends Error {
 }
 
 export class ToolExecutionError extends Error {
-  constructor(
-    readonly tool: string,
-    cause?: unknown,
-  ) {
-    super(
-      `tool "${tool}" failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
+  constructor(readonly tool: string, cause?: unknown) {
+    super(`tool "${tool}" failed: ${cause instanceof Error ? cause.message : String(cause)}`);
     this.name = "ToolExecutionError";
   }
+}
+
+export class RunCanceledError extends Error {
+  constructor() {
+    super("agent run canceled");
+    this.name = "RunCanceledError";
+  }
+}
+
+export class InvalidModelResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidModelResponseError";
+  }
+}
+
+export class InvalidToolResultError extends Error {
+  constructor(message = "tool result is not a bounded JSON value") {
+    super(message);
+    this.name = "InvalidToolResultError";
+  }
+}
+
+const MAX_TOOL_JSON_DEPTH = 64;
+const MAX_TOOL_JSON_NODES = 10_000;
+// Keep each tool.call/tool.result comfortably below the ACP 1 MiB frame cap,
+// including its event envelope and JSON escaping.
+const MAX_TOOL_JSON_BYTES = 256 * 1024;
+const MAX_TOOL_TRANSCRIPT_JSON_BYTES = 4 * 1024 * 1024;
+const MAX_MODEL_CONTENT_JSON_BYTES = 512 * 1024;
+const MAX_TOOL_CALLS_PER_TURN = 128;
+
+interface NormalizedToolJson {
+  value: unknown;
+  wire: string;
+}
+
+/** Clone untrusted model/tool values into a stable, bounded JSON tree. */
+function normalizeToolJson(input: unknown): NormalizedToolJson {
+  const sourceRoot = input === undefined ? null : input;
+  const primitive = (value: unknown): unknown => {
+    if (value === null || typeof value === "string" || typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    throw new InvalidToolResultError();
+  };
+  if (typeof sourceRoot !== "object" || sourceRoot === null) {
+    const value = primitive(sourceRoot);
+    const wire = JSON.stringify(value);
+    if (Buffer.byteLength(wire, "utf8") > MAX_TOOL_JSON_BYTES) {
+      throw new InvalidToolResultError();
+    }
+    return { value, wire };
+  }
+
+  const makeContainer = (value: object): unknown[] | Record<string, unknown> => {
+    if (Array.isArray(value)) return [];
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new InvalidToolResultError();
+    }
+    return Object.create(null) as Record<string, unknown>;
+  };
+  const root = makeContainer(sourceRoot);
+  const seen = new WeakSet<object>([sourceRoot]);
+  const stack: Array<{
+    source: object;
+    target: unknown[] | Record<string, unknown>;
+    depth: number;
+  }> = [{ source: sourceRoot, target: root, depth: 0 }];
+  let nodes = 1;
+
+  try {
+    while (stack.length > 0) {
+      const frame = stack.pop()!;
+      if (frame.depth >= MAX_TOOL_JSON_DEPTH) throw new InvalidToolResultError();
+      if (Array.isArray(frame.source) && frame.source.length > MAX_TOOL_JSON_NODES) {
+        throw new InvalidToolResultError();
+      }
+      const keys = Array.isArray(frame.source)
+        ? Array.from({ length: frame.source.length }, (_unused, index) => String(index))
+        : Object.keys(frame.source);
+      nodes += keys.length;
+      if (nodes > MAX_TOOL_JSON_NODES) throw new InvalidToolResultError();
+      for (const key of keys) {
+        const raw = Array.isArray(frame.source) && !(Number(key) in frame.source)
+          ? null
+          : (frame.source as Record<string, unknown>)[key];
+        let cloned: unknown;
+        if (typeof raw !== "object" || raw === null) {
+          cloned = primitive(raw);
+        } else {
+          if (seen.has(raw)) throw new InvalidToolResultError();
+          seen.add(raw);
+          cloned = makeContainer(raw);
+          stack.push({
+            source: raw,
+            target: cloned as unknown[] | Record<string, unknown>,
+            depth: frame.depth + 1,
+          });
+        }
+        if (Array.isArray(frame.target)) frame.target[Number(key)] = cloned;
+        else frame.target[key] = cloned;
+      }
+    }
+  } catch (error) {
+    if (error instanceof InvalidToolResultError) throw error;
+    throw new InvalidToolResultError();
+  }
+
+  let wire: string;
+  try {
+    wire = JSON.stringify(root);
+  } catch {
+    throw new InvalidToolResultError();
+  }
+  if (Buffer.byteLength(wire, "utf8") > MAX_TOOL_JSON_BYTES) {
+    throw new InvalidToolResultError();
+  }
+  return { value: root, wire };
+}
+
+function validateModelResponse(
+  response: Awaited<ReturnType<Model["complete"]>>,
+): void {
+  try {
+    if (
+      response === null ||
+      typeof response !== "object" ||
+      typeof response.id !== "string" ||
+      response.id.length === 0 ||
+      response.id.length > 512 ||
+      typeof response.content !== "string" ||
+      Buffer.byteLength(JSON.stringify(response.content), "utf8") > MAX_MODEL_CONTENT_JSON_BYTES ||
+      !Array.isArray(response.toolCalls) ||
+      response.toolCalls.length > MAX_TOOL_CALLS_PER_TURN ||
+      !["stop", "tool_calls", "length", "error"].includes(response.finishReason) ||
+      response.usage === null ||
+      typeof response.usage !== "object"
+    ) {
+      throw new Error();
+    }
+    for (const value of [
+      response.usage.promptTokens,
+      response.usage.completionTokens,
+      response.usage.totalTokens,
+    ]) {
+      if (!Number.isSafeInteger(value) || value < 0) throw new Error();
+    }
+    if (
+      response.usage.totalTokens !==
+      response.usage.promptTokens + response.usage.completionTokens
+    ) {
+      throw new Error();
+    }
+  } catch {
+    throw new InvalidModelResponseError("model returned an invalid or oversized response");
+  }
+}
+
+export interface PermissionDecision {
+  effect: "allow" | "ask" | "deny";
+  reason: string;
+  ruleId?: string;
+}
+
+export interface PermissionRequest extends ToolPermissionIntent {
+  permissionId: string;
+  sessionId: string;
+  callId: string;
+  scope: "once" | "run";
+  reason?: string;
+}
+
+export interface PermissionResolution {
+  decision: "allow" | "deny";
+  note?: string;
+}
+
+export interface PermissionController {
+  /** Pure policy decision. The kernel enforces the returned effect. */
+  decide(intent: ToolPermissionIntent): PermissionDecision;
+  /** Resolve an `ask`. Missing or failed resolution is a denial. */
+  resolve?(request: PermissionRequest): Promise<PermissionResolution | "allow" | "deny">;
 }
 
 export interface RunOptions {
@@ -58,18 +236,18 @@ export interface RunOptions {
   budget?: Budget;
   /** Hard cap on model turns. Defaults to 8. */
   maxSteps?: number;
-  /** Task id stamped onto events (maps to the task manifest). */
   taskId?: string;
-  /** Session id stamped onto events. */
   sessionId?: string;
-  /** Observe events as they are produced. */
+  workspace?: string;
   onEvent?: (event: AnyHarnessEvent) => void;
-  /** Injectable clock/id for deterministic tests. */
+  permission?: PermissionController;
+  signal?: AbortSignal;
   now?: () => string;
   newId?: (prefix: string) => string;
 }
 
 export interface RunResult {
+  status: "completed" | "failed";
   text: string;
   usage: Usage;
   steps: number;
@@ -77,14 +255,60 @@ export interface RunResult {
   events: AnyHarnessEvent[];
 }
 
+function safeErrorCode(error: unknown): string {
+  const candidate = (error as { code?: unknown } | undefined)?.code;
+  return typeof candidate === "string" && /^[A-Z0-9_]{2,80}$/.test(candidate)
+    ? candidate
+    : "MODEL_COMPLETION_FAILED";
+}
+
+function normalizeResolution(
+  value: PermissionResolution | "allow" | "deny",
+): PermissionResolution {
+  const normalized = typeof value === "string" ? { decision: value } : value;
+  if (
+    normalized === null ||
+    typeof normalized !== "object" ||
+    (normalized.decision !== "allow" && normalized.decision !== "deny") ||
+    (normalized.note !== undefined && (
+      typeof normalized.note !== "string" || normalized.note.length > 4096
+    ))
+  ) {
+    throw new Error("invalid permission resolution");
+  }
+  return normalized;
+}
+
+async function raceWithAbort<T>(
+  operation: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) throw new RunCanceledError();
+  let onAbort!: () => void;
+  const canceled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new RunCanceledError());
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([operation, canceled]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export async function runAgent(opts: RunOptions): Promise<RunResult> {
   const at = opts.now ?? (() => new Date().toISOString());
-  const newId = opts.newId ?? ((p: string) => `${p}-${randomUUID()}`);
-
+  const newId = opts.newId ?? ((prefix: string) => `${prefix}-${randomUUID()}`);
   const events: AnyHarnessEvent[] = [];
   const emit = (event: AnyHarnessEvent) => {
     events.push(event);
-    opts.onEvent?.(event);
+    try {
+      opts.onEvent?.(event);
+    } catch {
+      // Observers cannot change kernel control flow. Services own their own
+      // persistence/transport failure handling outside this synchronous hook.
+    }
   };
 
   const budget = opts.budget ?? {};
@@ -94,103 +318,236 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   const model = opts.model;
   const tools = opts.tools ?? new ToolRegistry();
   const taskId = opts.taskId;
+  const toolDefinitions: ToolDefinition[] = tools.list().map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema ?? { type: "object" },
+  }));
 
-  let spentTokens = 0;
+  let usage = emptyUsage();
   let toolCalls = 0;
   let steps = 0;
   let warnedTokens = false;
   let warnedCalls = false;
   let finalText = "";
   let done = false;
-
+  let stopped = false;
+  let toolTranscriptBytes = 0;
+  const runPermissionGrants = new Set<string>();
   const messages: ChatMessage[] = [{ role: "user", content: opts.goal }];
 
-  const budgetWarning = (
-    metric: "tokens" | "tool_calls",
-    used: number,
-    limit: number,
-  ) =>
-    emit(
-      createEvent(
-        "budget.warning",
-        {
-          taskId,
-          metric,
-          used,
-          limit,
-          pct: limit > 0 ? Math.round((used / limit) * 100) : 100,
-        },
-        { at: at(), eventId: newId("evt"), actor: "kernel" },
-      ),
-    );
+  const permissionGrantKey = (intent: ToolPermissionIntent): string =>
+    JSON.stringify([intent.action, intent.subject ?? null]);
+
+  const budgetWarning = (metric: "tokens" | "tool_calls", used: number, limit: number) =>
+    emit(createEvent("budget.warning", {
+      taskId, metric, used, limit,
+      pct: limit > 0 ? Math.round((used / limit) * 100) : 100,
+    }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
 
   const stop = (
     status: "completed" | "failed" | "canceled" | "budget_exceeded",
     note?: string,
-  ) =>
-    emit(
-      createEvent(
-        "agent.stopped",
-        { agentId, status, steps, toolCalls, note },
-        { at: at(), eventId: newId("evt"), actor: "kernel" },
-      ),
-    );
+  ) => {
+    if (stopped) return;
+    stopped = true;
+    emit(createEvent("agent.stopped", {
+      agentId, status, steps, toolCalls, note,
+    }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+  };
 
-  emit(
-    createEvent(
-      "session.created",
-      { sessionId },
-      { at: at(), eventId: newId("evt"), actor: "kernel" },
-    ),
-  );
-  emit(
-    createEvent(
-      "agent.started",
-      { agentId, sessionId, taskId, model: model.name },
-      { at: at(), eventId: newId("evt"), actor: "kernel" },
-    ),
-  );
+  const cancelIfAborted = () => {
+    if (!opts.signal?.aborted) return;
+    stop("canceled", "abort signal received");
+    throw new RunCanceledError();
+  };
+
+  emit(createEvent("session.created", { sessionId, workspace: opts.workspace }, {
+    at: at(), eventId: newId("evt"), actor: "kernel",
+  }));
+  emit(createEvent("agent.started", {
+    agentId, sessionId, taskId, model: model.name,
+  }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
 
   while (steps < maxSteps) {
+    cancelIfAborted();
+    const tokenLimitBeforeRequest = budget.maxModelTokens;
+    if (
+      tokenLimitBeforeRequest !== undefined &&
+      usage.totalTokens >= tokenLimitBeforeRequest
+    ) {
+      budgetWarning("tokens", usage.totalTokens, tokenLimitBeforeRequest);
+      stop("budget_exceeded", `max_model_tokens=${tokenLimitBeforeRequest}`);
+      throw new BudgetExceededError(
+        "tokens",
+        usage.totalTokens,
+        tokenLimitBeforeRequest,
+      );
+    }
     steps++;
     const requestId = newId("req");
+    emit(createEvent("model.request", {
+      requestId, model: model.name, messageCount: messages.length,
+    }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
 
-    emit(
-      createEvent(
-        "model.request",
-        { requestId, model: model.name, messageCount: messages.length },
-        { at: at(), eventId: newId("evt"), actor: "kernel" },
-      ),
-    );
+    let response: Awaited<ReturnType<Model["complete"]>>;
+    try {
+      const remaining = budget.maxModelTokens === undefined
+        ? undefined
+        : budget.maxModelTokens - usage.totalTokens;
+      response = await model.complete({
+        messages,
+        tools: toolDefinitions.length > 0 ? toolDefinitions : undefined,
+        maxTokens: remaining,
+        signal: opts.signal,
+      });
+    } catch (error) {
+      emit(createEvent("model.response", {
+        requestId,
+        model: model.name,
+        finishReason: "error",
+        usage: emptyUsage(),
+      }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+      const canceled = opts.signal?.aborted || error instanceof RunCanceledError;
+      emit(createEvent("error", {
+        code: canceled ? "RUN_CANCELED" : safeErrorCode(error),
+        message: canceled
+          ? "agent run canceled"
+          : `model completion failed for ${model.name}`,
+        retryable: canceled ? false : Boolean((error as { retryable?: unknown })?.retryable),
+      }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+      stop(canceled ? "canceled" : "failed", canceled ? "abort signal received" : "model completion failed");
+      if (canceled) throw new RunCanceledError();
+      throw error;
+    }
 
-    const response = await model.complete({ messages });
-    spentTokens += response.usage.totalTokens;
+    try {
+      validateModelResponse(response);
+    } catch (error) {
+      emit(createEvent("model.response", {
+        requestId,
+        model: model.name,
+        finishReason: "error",
+        usage: emptyUsage(),
+      }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+      emit(createEvent("error", {
+        code: "MODEL_INVALID_RESPONSE",
+        message: "model returned an invalid or oversized response",
+        retryable: false,
+      }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+      stop("failed", "invalid model response");
+      throw error;
+    }
 
-    emit(
-      createEvent(
-        "model.response",
-        {
-          requestId,
-          model: model.name,
-          finishReason: response.finishReason,
-          usage: response.usage,
-        },
-        { at: at(), eventId: newId("evt"), actor: "kernel" },
-      ),
-    );
+    const accumulatedUsage = addUsage(usage, response.usage);
+    if (
+      !Number.isSafeInteger(accumulatedUsage.promptTokens) ||
+      !Number.isSafeInteger(accumulatedUsage.completionTokens) ||
+      !Number.isSafeInteger(accumulatedUsage.totalTokens)
+    ) {
+      emit(createEvent("model.response", {
+        requestId,
+        model: model.name,
+        finishReason: response.finishReason,
+        usage: response.usage,
+      }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+      emit(createEvent("error", {
+        code: "MODEL_INVALID_RESPONSE",
+        message: "model usage overflowed safe budget accounting",
+        retryable: false,
+      }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+      stop("failed", "model usage overflowed safe budget accounting");
+      throw new InvalidModelResponseError(
+        "model usage overflowed safe budget accounting",
+      );
+    }
+    usage = accumulatedUsage;
+    emit(createEvent("model.response", {
+      requestId,
+      model: model.name,
+      finishReason: response.finishReason,
+      usage: response.usage,
+    }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
 
-    // Budget: tokens. Warn once past 50%, hard-stop when exceeded.
     const tokenLimit = budget.maxModelTokens;
     if (tokenLimit !== undefined) {
-      if (spentTokens > tokenLimit) {
-        budgetWarning("tokens", spentTokens, tokenLimit);
+      if (usage.totalTokens > tokenLimit) {
+        budgetWarning("tokens", usage.totalTokens, tokenLimit);
         stop("budget_exceeded", `max_model_tokens=${tokenLimit}`);
-        throw new BudgetExceededError("tokens", spentTokens, tokenLimit);
+        throw new BudgetExceededError("tokens", usage.totalTokens, tokenLimit);
       }
-      if (!warnedTokens && spentTokens >= tokenLimit * BUDGET_WARNING_THRESHOLD) {
+      if (!warnedTokens && usage.totalTokens >= tokenLimit * BUDGET_WARNING_THRESHOLD) {
         warnedTokens = true;
-        budgetWarning("tokens", spentTokens, tokenLimit);
+        budgetWarning("tokens", usage.totalTokens, tokenLimit);
       }
+    }
+
+    const finishReasonMismatch =
+      (response.finishReason === "tool_calls" && response.toolCalls.length === 0) ||
+      (response.finishReason !== "tool_calls" && response.toolCalls.length > 0);
+    if (finishReasonMismatch) {
+      emit(createEvent("error", {
+        code: "MODEL_INVALID_RESPONSE",
+        message: "model finish reason and tool calls are inconsistent",
+      }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+      stop("failed", "invalid model response");
+      throw new InvalidModelResponseError(
+        "finishReason tool_calls requires calls, and calls require finishReason tool_calls",
+      );
+    }
+
+    if (response.finishReason === "error") {
+      emit(createEvent("error", {
+        code: "MODEL_INVALID_RESPONSE",
+        message: "model returned an error finish reason",
+      }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+      stop("failed", "model returned an error finish reason");
+      throw new InvalidModelResponseError("model returned finishReason error");
+    }
+
+    if (response.finishReason === "length") {
+      finalText = response.content;
+      emit(createEvent("error", {
+        code: "MODEL_OUTPUT_TRUNCATED",
+        message: "model output ended at the provider length limit",
+      }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+      stop("failed", "model output truncated");
+      break;
+    }
+
+    try {
+      let argumentBytes = 0;
+      response = {
+        ...response,
+        toolCalls: response.toolCalls.map((call) => {
+          if (
+            typeof call.id !== "string" || call.id.length === 0 || call.id.length > 512 ||
+            typeof call.name !== "string" || call.name.length === 0 || call.name.length > 256
+          ) {
+            throw new InvalidToolResultError();
+          }
+          const normalized = normalizeToolJson(call.arguments);
+          argumentBytes += Buffer.byteLength(normalized.wire, "utf8");
+          if (
+            toolTranscriptBytes + argumentBytes >
+            MAX_TOOL_TRANSCRIPT_JSON_BYTES
+          ) {
+            throw new InvalidToolResultError();
+          }
+          return {
+            ...call,
+            arguments: normalized.value,
+          };
+        }),
+      };
+      toolTranscriptBytes += argumentBytes;
+    } catch {
+      emit(createEvent("error", {
+        code: "MODEL_INVALID_RESPONSE",
+        message: "model returned tool arguments that are not bounded JSON",
+      }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+      stop("failed", "invalid model tool arguments");
+      throw new InvalidModelResponseError("tool arguments must be bounded JSON values");
     }
 
     if (response.toolCalls.length === 0) {
@@ -200,8 +557,19 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       break;
     }
 
-    // Tool calls.
+    if (
+      tokenLimit !== undefined &&
+      usage.totalTokens >= tokenLimit
+    ) {
+      budgetWarning("tokens", usage.totalTokens, tokenLimit);
+      stop("budget_exceeded", `max_model_tokens=${tokenLimit}`);
+      throw new BudgetExceededError("tokens", usage.totalTokens, tokenLimit);
+    }
+
+    messages.push({ role: "assistant", content: response.content, toolCalls: response.toolCalls });
+
     for (const call of response.toolCalls) {
+      cancelIfAborted();
       const callLimit = budget.maxToolCalls;
       if (callLimit !== undefined) {
         if (toolCalls >= callLimit) {
@@ -216,80 +584,233 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       }
 
       const callId = newId("call");
-      const t0 = Date.now();
-      emit(
-        createEvent(
-          "tool.call",
-          { callId, tool: call.name, input: call.arguments },
-          { at: at(), eventId: newId("evt"), actor: "kernel" },
-        ),
-      );
+      const started = Date.now();
+      emit(createEvent("tool.call", { callId, tool: call.name, input: call.arguments }, {
+        at: at(), eventId: newId("evt"), actor: "kernel",
+      }));
 
       const tool = tools.get(call.name);
       let ok = false;
       let output: unknown;
+      let outputWire: string | undefined;
       let error: { code: string; message: string } | undefined;
+      let canceledWhileAwaitingPermission = false;
+      let canceledDuringTool = false;
 
-      if (tool === undefined) {
+      if (!tool) {
         error = { code: "TOOL_NOT_FOUND", message: `unknown tool: ${call.name}` };
       } else {
-        try {
-          const params = tool.parameters.safeParse(call.arguments);
-          if (!params.success) {
-            const first = params.error.issues[0];
-            error = {
-              code: "TOOL_BAD_INPUT",
-              message: first
-                ? `invalid input for ${call.name}: ${first.message} (${first.path.join(".")})`
-                : `invalid input for ${call.name}`,
-            };
-          } else {
-            output = await tool.execute(params.data);
-            ok = true;
-          }
-        } catch (err) {
+        const params = tool.parameters.safeParse(call.arguments);
+        if (!params.success) {
+          const first = params.error.issues[0];
           error = {
-            code: "TOOL_EXECUTION_FAILED",
-            message: err instanceof Error ? err.message : String(err),
+            code: "TOOL_BAD_INPUT",
+            message: first
+              ? `invalid input for ${call.name}: ${first.message} (${first.path.join(".")})`
+              : `invalid input for ${call.name}`,
           };
+        } else {
+          let permitted = true;
+          if (opts.permission) {
+            let intent: ToolPermissionIntent | undefined;
+            let decision: PermissionDecision | undefined;
+            try {
+              intent = tool.authorization?.(params.data) ?? {
+                action: "tool.call",
+                subject: call.name,
+                scope: "once" as const,
+              };
+              if (
+                !intent || typeof intent.action !== "string" || intent.action.length === 0 ||
+                intent.action.length > 256 ||
+                (intent.subject !== undefined && (
+                  typeof intent.subject !== "string" || intent.subject.length > 4096
+                )) ||
+                (intent.scope !== undefined && intent.scope !== "once" && intent.scope !== "run")
+              ) {
+                throw new Error("invalid tool permission intent");
+              }
+              decision = opts.permission.decide(intent);
+              if (
+                !decision ||
+                (decision.effect !== "allow" && decision.effect !== "ask" && decision.effect !== "deny") ||
+                typeof decision.reason !== "string" || decision.reason.length > 4096 ||
+                (decision.ruleId !== undefined && (
+                  typeof decision.ruleId !== "string" || decision.ruleId.length > 256
+                ))
+              ) {
+                throw new Error("invalid policy decision");
+              }
+            } catch {
+              permitted = false;
+              error = {
+                code: "TOOL_AUTHORIZATION_FAILED",
+                message: "tool authorization failed closed",
+              };
+              emit(createEvent("error", {
+                code: "TOOL_AUTHORIZATION_FAILED",
+                message: `authorization failed for tool ${call.name}`,
+                retryable: false,
+              }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+            }
+
+            if (intent && decision) {
+              emit(createEvent("policy.decision", {
+                action: intent.action,
+                subject: intent.subject,
+                effect: decision.effect,
+                reason: decision.reason,
+                ruleId: decision.ruleId,
+              }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
+
+              const grantKey = permissionGrantKey(intent);
+              const hasRunGrant = (intent.scope ?? "once") === "run" &&
+                runPermissionGrants.has(grantKey);
+
+              if (decision.effect === "deny") {
+                permitted = false;
+                error = { code: "TOOL_POLICY_DENIED", message: decision.reason };
+              } else if (decision.effect === "ask" && !hasRunGrant) {
+              const request: PermissionRequest = {
+                permissionId: newId("perm"),
+                sessionId,
+                callId,
+                action: intent.action,
+                subject: intent.subject,
+                scope: intent.scope ?? "once",
+                reason: decision.reason,
+              };
+              let resolutionPromise: Promise<PermissionResolution | "allow" | "deny">;
+              try {
+                resolutionPromise = opts.permission.resolve
+                  ? opts.permission.resolve(request)
+                  : Promise.resolve({ decision: "deny", note: "no permission resolver" });
+              } catch {
+                resolutionPromise = Promise.resolve({ decision: "deny", note: "permission resolver failed" });
+              }
+              emit(createEvent("permission.requested", request, {
+                at: at(), eventId: newId("evt"), actor: "kernel",
+              }));
+              let resolution: PermissionResolution;
+              try {
+                const value = await raceWithAbort(resolutionPromise, opts.signal);
+                resolution = normalizeResolution(value);
+              } catch (resolveError) {
+                if (resolveError instanceof RunCanceledError || opts.signal?.aborted) {
+                  canceledWhileAwaitingPermission = true;
+                  resolution = {
+                    decision: "deny",
+                    note: "run canceled while awaiting permission",
+                  };
+                } else {
+                  resolution = { decision: "deny", note: "permission resolver failed" };
+                }
+              }
+              emit(createEvent("permission.resolved", {
+                permissionId: request.permissionId,
+                sessionId: request.sessionId,
+                callId: request.callId,
+                action: request.action,
+                subject: request.subject,
+                scope: request.scope,
+                decision: resolution.decision,
+                note: resolution.note,
+              }, { at: at(), eventId: newId("evt"), actor: "operator" }));
+              if (resolution.decision !== "allow") {
+                permitted = false;
+                error = {
+                  code: "TOOL_PERMISSION_DENIED",
+                  message: resolution.note ?? "operator denied permission",
+                };
+              } else if (request.scope === "run") {
+                runPermissionGrants.add(grantKey);
+              }
+              }
+            }
+          }
+
+          if (permitted) {
+            // A service observer may abort synchronously when it cannot safely
+            // record/transport the authorization trail. Never cross the tool
+            // side-effect boundary after that failure.
+            cancelIfAborted();
+            try {
+              const rawOutput = await tool.execute(params.data, {
+                signal: opts.signal,
+                workspace: opts.workspace,
+                sessionId,
+                taskId,
+                callId,
+              });
+              if (opts.signal?.aborted) {
+                canceledDuringTool = true;
+                error = { code: "TOOL_CANCELED", message: "tool canceled" };
+              } else {
+                const normalized = normalizeToolJson(rawOutput);
+                const outputBytes = Buffer.byteLength(normalized.wire, "utf8");
+                if (
+                  toolTranscriptBytes + outputBytes >
+                  MAX_TOOL_TRANSCRIPT_JSON_BYTES
+                ) {
+                  throw new InvalidToolResultError();
+                }
+                toolTranscriptBytes += outputBytes;
+                output = normalized.value;
+                outputWire = normalized.wire;
+                ok = true;
+              }
+            } catch (executeError) {
+              canceledDuringTool = Boolean(opts.signal?.aborted);
+              error = canceledDuringTool
+                ? { code: "TOOL_CANCELED", message: "tool canceled" }
+                : executeError instanceof InvalidToolResultError
+                  ? {
+                      code: "TOOL_INVALID_RESULT",
+                      message: "tool result is not a bounded JSON value",
+                    }
+                : {
+                    code: "TOOL_EXECUTION_FAILED",
+                    message: executeError instanceof Error ? executeError.message : String(executeError),
+                  };
+            }
+          }
         }
       }
 
       toolCalls++;
-      const durationMs = Date.now() - t0;
-
-      emit(
-        createEvent(
-          "tool.result",
-          { callId, tool: call.name, ok, output, error, durationMs },
-          { at: at(), eventId: newId("evt"), actor: "kernel" },
-        ),
-      );
-
-      // Feed the result back as a `tool` message.
-      messages.push({
-        role: "assistant",
-        content: "",
-      });
+      emit(createEvent("tool.result", {
+        callId,
+        tool: call.name,
+        ok,
+        output,
+        error,
+        durationMs: Date.now() - started,
+      }, { at: at(), eventId: newId("evt"), actor: "kernel" }));
       messages.push({
         role: "tool",
         name: call.name,
         toolCallId: call.id,
         content: ok
-          ? JSON.stringify(output ?? null)
+          ? outputWire!
           : JSON.stringify({ error: { code: error?.code, message: error?.message } }),
       });
+      if (canceledWhileAwaitingPermission || canceledDuringTool) {
+        stop(
+          "canceled",
+          canceledWhileAwaitingPermission
+            ? "abort signal received while awaiting permission"
+            : "abort signal received during tool execution",
+        );
+        throw new RunCanceledError();
+      }
     }
   }
 
-  // Step budget exhausted: the model never produced a final answer.
-  if (!done) {
-    stop("failed", `max_steps=${maxSteps} reached without a final answer`);
-  }
-
+  if (!done) stop("failed", `max_steps=${maxSteps} reached without a final answer`);
   return {
+    status: done ? "completed" : "failed",
     text: finalText,
-    usage: { promptTokens: 0, completionTokens: 0, totalTokens: spentTokens },
+    usage,
     steps,
     toolCalls,
     events,

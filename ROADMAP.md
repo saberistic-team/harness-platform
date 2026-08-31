@@ -45,12 +45,25 @@ The M2 MCP adapter negotiates revisions through `2025-11-25`. The stateless
 discovery lifecycle introduced by MCP `2026-07-28` is a future compatibility
 adapter, not a silent behavior change to this client.
 
-## M3 — Services
+## M3 — Services  ✅ (`tasks/m3-services`)
 - `services/agent-server`: ACP server over WS; one kernel run per session
 - `services/sandbox-runner`: Docker-per-run, policy-enforced boundaries,
   fs mounts scoped by `allowed_paths`, network namespace default-deny
 - Provider model adapter (OpenAI-compatible) behind `packages/models`
 - `apps/tui`: interactive; permission `ask` flows
+
+M3 keeps live-provider and live-Docker checks out of the default lane. The
+provider adapter is tested with injected HTTP responses; the sandbox runner is
+tested through an injected argv-only executor. ACP WebSocket integration is
+local-only and uses the same typed harness event stream as persisted sessions.
+Session replay/resume remains M4 work; the M3 server advertises that capability
+as unavailable.
+
+The server binds only to loopback by default. A non-loopback listener requires
+both bearer-token authentication and an explicit plaintext-remote opt-in; the
+supported deployment shape is a TLS reverse proxy with clients using `wss://`.
+Sandbox images are immutable digest references unless a reviewed local image is
+explicitly trusted for development.
 
 ## M4 — Control plane & scale
 - `services/control-plane`: scheduling, task state, artifact registry
