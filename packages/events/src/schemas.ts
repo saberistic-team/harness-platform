@@ -139,6 +139,57 @@ export const policyDecision = envelope(
   }),
 );
 
+const permissionScope = z.enum(["once", "run"]);
+
+export const permissionRequested = envelope(
+  "permission.requested",
+  z.object({
+    permissionId: id,
+    sessionId: id,
+    callId: id.optional(),
+    action: id,
+    subject: z.string().optional(),
+    scope: permissionScope,
+    reason: z.string().optional(),
+  }),
+);
+
+export const permissionResolved = envelope(
+  "permission.resolved",
+  z.object({
+    permissionId: id,
+    sessionId: id,
+    callId: id.optional(),
+    action: id,
+    subject: z.string().optional(),
+    scope: permissionScope,
+    decision: z.enum(["allow", "deny"]),
+    note: z.string().optional(),
+  }),
+);
+
+export const sandboxStarted = envelope(
+  "sandbox.started",
+  z.object({
+    runId: id,
+    containerName: id,
+    image: id,
+    network: z.enum(["none", "enabled"]),
+    mounts: z.number().int().nonnegative(),
+  }),
+);
+
+export const sandboxStopped = envelope(
+  "sandbox.stopped",
+  z.object({
+    runId: id,
+    containerName: id,
+    status: z.enum(["completed", "failed", "canceled"]),
+    exitCode: z.number().int().optional(),
+    durationMs: z.number().nonnegative().optional(),
+  }),
+);
+
 export const runRecorded = envelope(
   "run.recorded",
   z.object({
@@ -173,6 +224,10 @@ export const eventSchemas = {
   "task.updated": taskUpdated,
   "budget.warning": budgetWarning,
   "policy.decision": policyDecision,
+  "permission.requested": permissionRequested,
+  "permission.resolved": permissionResolved,
+  "sandbox.started": sandboxStarted,
+  "sandbox.stopped": sandboxStopped,
   "run.recorded": runRecorded,
   "error": errorEvent,
 } as const;

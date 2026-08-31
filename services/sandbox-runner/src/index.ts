@@ -1,25 +1,24 @@
 /**
- * @harness/sandbox-runner — executes tool calls inside a container.
+ * Docker-per-run sandbox boundary.
  *
- * M0: placeholder service. Responsibilities (M3):
- *   - one Docker container per task run (gVisor or rootless when
- *     available) with the workspace volume mounted read-write ONLY
- *     inside tasks/* allowed prefixes
- *   - enforces manifest permissions at the syscall boundary:
- *     network namespace, egress policy, fs mounts
- *   - streams tool events in/out as harness events
- *   - artifacts leave the container via the artifact store (S3/MinIO)
- *
- * The policy engine (packages/policy) remains the only place rules are
- * evaluated; the runner only says "yes/no" to the engine's decisions.
+ * Policy remains pure in @harness/policy. This package compiles the manifest,
+ * resolves explicit `ask` decisions, creates a fail-closed Docker plan, and
+ * executes that plan through an injectable argv-only process boundary.
  */
+
+export * from "./errors";
+export * from "./executor";
+export * from "./mounts";
+export * from "./plan";
+export * from "./runner";
+export * from "./types";
 
 export interface SandboxRunnerStatus {
   service: "sandbox-runner";
-  version: "0.0.0";
-  ready: false;
+  version: "0.1.0";
+  ready: true;
 }
 
 export function status(): SandboxRunnerStatus {
-  return { service: "sandbox-runner", version: "0.0.0", ready: false };
+  return { service: "sandbox-runner", version: "0.1.0", ready: true };
 }

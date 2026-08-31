@@ -6,19 +6,63 @@
  * without touching the agent loop.
  */
 
-export interface ChatMessage {
-  role: "system" | "user" | "assistant" | "tool";
+export interface SystemChatMessage {
+  role: "system";
   content: string;
-  /** Present on `tool` messages: the tool this result belongs to. */
-  name?: string;
-  /** Present on `tool` messages: id of the model's tool call. */
-  toolCallId?: string;
 }
+
+export interface UserChatMessage {
+  role: "user";
+  content: string;
+}
+
+export interface AssistantChatMessage {
+  role: "assistant";
+  content: string;
+  /** Tool calls made by this assistant turn, retained in conversation history. */
+  toolCalls?: ToolCall[];
+}
+
+export interface ToolChatMessage {
+  role: "tool";
+  content: string;
+  /** The tool this result belongs to. */
+  name: string;
+  /** Id of the model's tool call. */
+  toolCallId: string;
+}
+
+export type ChatMessage =
+  | SystemChatMessage
+  | UserChatMessage
+  | AssistantChatMessage
+  | ToolChatMessage;
 
 export interface ToolCall {
   id: string;
   name: string;
   arguments: unknown;
+}
+
+/** JSON value accepted by provider-neutral tool schemas and options. */
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+/**
+ * Provider-neutral function tool definition.
+ *
+ * Runtime tool implementations remain in `@harness/tools`; models receive
+ * only the JSON Schema needed to advertise a tool to a provider.
+ */
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: { [key: string]: JsonValue };
 }
 
 export interface Usage {
@@ -31,11 +75,14 @@ export type FinishReason = "stop" | "tool_calls" | "length" | "error";
 
 export interface CompletionRequest {
   messages: ChatMessage[];
+  tools?: ToolDefinition[];
   model?: string;
   maxTokens?: number;
   system?: string;
   /** Free-form passthrough for provider-specific knobs. */
   providerOptions?: Record<string, unknown>;
+  /** Optional caller cancellation, independent of provider timeouts. */
+  signal?: AbortSignal;
 }
 
 export interface CompletionResponse {

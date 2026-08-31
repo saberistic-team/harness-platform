@@ -1,9 +1,18 @@
 {
   "name": "@harness/sandbox-runner",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@harness/events": "workspace:*",
+    "@harness/policy": "workspace:*",
+    "@harness/sdk": "workspace:*"
   }
 }

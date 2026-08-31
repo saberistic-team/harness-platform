@@ -1,11 +1,11 @@
 /**
  * @harness/tui — terminal client for the harness platform.
  *
- * M1: read-only session/event viewer over the SQLite session store
- * and run reports (see ./view.ts, ./render.ts). Interactive driving
- * and permission `ask` flows arrive with the ACP server in M3.
+ * Read-only session/report viewing plus an interactive M3 ACP client that
+ * streams events and resolves permission `ask` requests explicitly.
  */
 
+export * from "./interactive";
 export * from "./render";
 export * from "./view";
 
@@ -17,8 +17,8 @@ export function status(): {
 } {
   return {
     app: "harness-tui",
-    version: "0.1.0",
+    version: "0.2.0",
     ready: true,
-    viewer: "read-only (M1); interactive in M3 (ACP client)",
+    viewer: "read-only history + interactive ACP permission client",
   };
 }

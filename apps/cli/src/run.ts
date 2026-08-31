@@ -179,7 +179,7 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
         eventOpts(),
       ),
     );
-  } else if (execDecision.effect === "deny") {
+  } else if (execDecision.effect !== "allow") {
     outcome = "blocked";
     push(
       createEvent(
@@ -187,17 +187,18 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
         {
           action: "process.exec",
           subject: args.testCommand ?? DEFAULT_TEST_COMMAND,
-          effect: "deny",
+          effect: execDecision.effect,
           reason: execDecision.reason,
         },
         eventOpts(),
       ),
     );
   } else {
-    // Gate 4: tests. ("ask" is honored here by the interactive CLI in
-    // M1; for headless exit-gate runs, a task that asks is treated as
-    // allowed only for its own test command by the grader's prompt.
-    const command = args.testCommand ?? DEFAULT_TEST_COMMAND;    const t0 = Date.now();
+    // Gate 4: tests. This exit gate is headless, so only an explicit
+    // manifest allow reaches execution. `ask` is resolved by interactive
+    // ACP clients in M3 and never silently elevated here.
+    const command = args.testCommand ?? DEFAULT_TEST_COMMAND;
+    const t0 = Date.now();
     const proc = spawnSync(command, {
       cwd,
       shell: true,
