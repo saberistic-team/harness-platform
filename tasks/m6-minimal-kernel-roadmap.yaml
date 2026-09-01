@@ -1,0 +1,59 @@
+id: m6-minimal-kernel-roadmap
+title: "Stage the minimal-kernel self-hosting roadmap"
+goal: >
+  Amend the roadmap with a dependency-ordered M6-M12 sequence that evolves the
+  existing kernel into a Pi-like minimal session runtime, integrates it with
+  the trusted exit gate, and proves self-hosting with a human-reviewed doctor
+  command while preserving the repository's events-first, pure-policy,
+  offline-test, and one-task-per-PR invariants.
+
+acceptance:
+  - ROADMAP.md splits contracts/events, the streaming loop, bounded tools,
+    steering/compaction, restart-safe persistence, the offline self-host runner,
+    and the live doctor dogfood into separate ordered milestones
+  - the roadmap defines the kernel ownership boundary and the AgentRuntime,
+    ModelAdapter, Tool, EventStore, and Workspace target interfaces
+  - existing event, model, tool, workspace, and session contracts are adapted
+    rather than silently replaced with incompatible parallel protocols
+  - tool intent and the pure policy decision are durably persisted before any
+    side effect, with append failure stopping execution
+  - the initial runtime exposes only fs.read, fs.list, fs.write, process.exec,
+    and git.diff and explicitly defers broader integrations
+  - deterministic tests cover multiple tool rounds, invalid arguments, tool
+    failure, cancellation, timeout, context overflow, replay, duplicate
+    delivery, and restart continuation
+  - the final dogfood milestone defines doctor output, a real-model manual
+    lane, trusted branch creation, human review, and the clean-checkout
+    self-hosting exit gate
+  - every implementation milestone requires its own future manifest, branch,
+    PR, and exit-gate evidence rather than reusing this roadmap contract
+  - README.md distinguishes completed M0-M7 work from planned M8-M12 work
+  - pnpm test and pnpm typecheck are green
+
+allowed_paths:
+  - README.md
+  - ROADMAP.md
+  - tasks/m6-minimal-kernel-roadmap.yaml
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test": allow
+    "pnpm typecheck": allow
+    "pnpm harness validate tasks/m6-minimal-kernel-roadmap.yaml": allow
+    "pnpm harness run tasks/m6-minimal-kernel-roadmap.yaml": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git diff*": allow
+    "git log*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 60000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request
