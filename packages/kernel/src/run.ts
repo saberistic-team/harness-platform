@@ -74,13 +74,13 @@ const MAX_TOOL_TRANSCRIPT_JSON_BYTES = 4 * 1024 * 1024;
 const MAX_MODEL_CONTENT_JSON_BYTES = 512 * 1024;
 const MAX_TOOL_CALLS_PER_TURN = 128;
 
-interface NormalizedToolJson {
+export interface NormalizedToolJson {
   value: unknown;
   wire: string;
 }
 
 /** Clone untrusted model/tool values into a stable, bounded JSON tree. */
-function normalizeToolJson(input: unknown): NormalizedToolJson {
+export function normalizeToolJson(input: unknown): NormalizedToolJson {
   const sourceRoot = input === undefined ? null : input;
   const primitive = (value: unknown): unknown => {
     if (value === null || typeof value === "string" || typeof value === "boolean") {
@@ -115,22 +115,66 @@ function normalizeToolJson(input: unknown): NormalizedToolJson {
   }> = [{ source: sourceRoot, target: root, depth: 0 }];
   let nodes = 1;
 
+  const dataEntries = (source: object): Array<[string, unknown]> => {
+    const descriptors = Object.getOwnPropertyDescriptors(
+      source,
+    ) as unknown as PropertyDescriptorMap;
+    if (Array.isArray(source)) {
+      const lengthDescriptor = descriptors.length;
+      const length = lengthDescriptor && "value" in lengthDescriptor
+        ? lengthDescriptor.value
+        : undefined;
+      if (
+        !Number.isSafeInteger(length) ||
+        (length as number) < 0 ||
+        (length as number) > MAX_TOOL_JSON_NODES
+      ) {
+        throw new InvalidToolResultError();
+      }
+      for (const key of Reflect.ownKeys(descriptors)) {
+        if (key === "length") continue;
+        if (typeof key !== "string") throw new InvalidToolResultError();
+        const index = Number(key);
+        if (
+          !Number.isSafeInteger(index) ||
+          index < 0 ||
+          index >= (length as number) ||
+          String(index) !== key
+        ) {
+          throw new InvalidToolResultError();
+        }
+      }
+      return Array.from({ length: length as number }, (_unused, index) => {
+        const key = String(index);
+        const descriptor = descriptors[key];
+        if (descriptor === undefined) return [key, null];
+        if (!("value" in descriptor) || !descriptor.enumerable) {
+          throw new InvalidToolResultError();
+        }
+        return [key, descriptor.value];
+      });
+    }
+
+    const entries: Array<[string, unknown]> = [];
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (typeof key !== "string") throw new InvalidToolResultError();
+      const descriptor = descriptors[key];
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+        throw new InvalidToolResultError();
+      }
+      entries.push([key, descriptor.value]);
+    }
+    return entries;
+  };
+
   try {
     while (stack.length > 0) {
       const frame = stack.pop()!;
       if (frame.depth >= MAX_TOOL_JSON_DEPTH) throw new InvalidToolResultError();
-      if (Array.isArray(frame.source) && frame.source.length > MAX_TOOL_JSON_NODES) {
-        throw new InvalidToolResultError();
-      }
-      const keys = Array.isArray(frame.source)
-        ? Array.from({ length: frame.source.length }, (_unused, index) => String(index))
-        : Object.keys(frame.source);
-      nodes += keys.length;
+      const entries = dataEntries(frame.source);
+      nodes += entries.length;
       if (nodes > MAX_TOOL_JSON_NODES) throw new InvalidToolResultError();
-      for (const key of keys) {
-        const raw = Array.isArray(frame.source) && !(Number(key) in frame.source)
-          ? null
-          : (frame.source as Record<string, unknown>)[key];
+      for (const [key, raw] of entries) {
         let cloned: unknown;
         if (typeof raw !== "object" || raw === null) {
           cloned = primitive(raw);
@@ -226,7 +270,10 @@ export interface PermissionController {
   /** Pure policy decision. The kernel enforces the returned effect. */
   decide(intent: ToolPermissionIntent): PermissionDecision;
   /** Resolve an `ask`. Missing or failed resolution is a denial. */
-  resolve?(request: PermissionRequest): Promise<PermissionResolution | "allow" | "deny">;
+  resolve?(
+    request: PermissionRequest,
+    signal?: AbortSignal,
+  ): Promise<PermissionResolution | "allow" | "deny">;
 }
 
 export interface RunOptions {

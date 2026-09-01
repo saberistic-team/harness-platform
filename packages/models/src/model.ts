@@ -20,7 +20,7 @@ export interface AssistantChatMessage {
   role: "assistant";
   content: string;
   /** Tool calls made by this assistant turn, retained in conversation history. */
-  toolCalls?: ToolCall[];
+  toolCalls?: readonly ToolCall[];
 }
 
 export interface ToolChatMessage {
@@ -73,14 +73,8 @@ export interface Usage {
 
 export type FinishReason = "stop" | "tool_calls" | "length" | "error";
 
-/**
- * Provider-neutral input shared by streaming and completion-based models.
- *
- * The signal belongs to the caller: adapters must forward it unchanged so a
- * runtime can cancel an in-flight provider request without provider-specific
- * knowledge.
- */
-export interface ModelRequest {
+/** Provider-neutral input for the original completion-based model API. */
+export interface CompletionRequest {
   messages: ChatMessage[];
   tools?: ToolDefinition[];
   model?: string;
@@ -93,12 +87,17 @@ export interface ModelRequest {
 }
 
 /**
- * Compatibility name for the original completion-based model API.
+ * Versioned streaming request used by the minimal runtime.
  *
- * Keeping this as an interface preserves existing imports and leaves room for
- * completion-only additions without making them part of ModelAdapter.
+ * The fields are optional while M6 callers migrate; M7 runtime requests always
+ * provide them together. `contextVersion` identifies the context contract,
+ * while `messageRevision` identifies the immutable message snapshot used for
+ * this request. Legacy `Model.complete()` callers keep their original shape.
  */
-export interface CompletionRequest extends ModelRequest {}
+export interface ModelRequest extends CompletionRequest {
+  contextVersion?: 1;
+  messageRevision?: number;
+}
 
 export interface CompletionResponse {
   id: string;
@@ -126,11 +125,18 @@ export interface ModelTextDeltaEvent {
   delta: string;
 }
 
+/** A complete model-requested tool intention, in provider delivery order. */
+export interface ModelToolCallEvent {
+  type: "tool.call";
+  call: ToolCall;
+}
+
 /**
  * The terminal event of every successful model stream.
  *
- * Tool calls remain part of the completed provider-neutral response in M6;
- * later kernel milestones may add incremental tool-call events when needed.
+ * Tool calls remain in the completed provider-neutral response for legacy
+ * completion parity. Streaming adapters also emit them as ordered tool.call
+ * events; runtimes validate both representations agree and execute them once.
  */
 export interface ModelResponseCompletedEvent {
   type: "response.completed";
@@ -138,7 +144,10 @@ export interface ModelResponseCompletedEvent {
 }
 
 /** Strict model-stream vocabulary supported by the minimal kernel. */
-export type ModelEvent = ModelTextDeltaEvent | ModelResponseCompletedEvent;
+export type ModelEvent =
+  | ModelTextDeltaEvent
+  | ModelToolCallEvent
+  | ModelResponseCompletedEvent;
 
 /** Async streaming model boundary owned by the minimal kernel. */
 export interface ModelAdapter {

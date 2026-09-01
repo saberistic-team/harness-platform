@@ -33,6 +33,8 @@ export interface ScriptedTurn {
   toolCalls?: ToolCall[];
   usage?: Usage;
   finishReason?: FinishReason;
+  /** Exact stream override for malformed-order and missing-terminal tests. */
+  stream?: readonly ModelEvent[];
 }
 
 /**
@@ -73,10 +75,21 @@ export class FakeModel implements Model, ModelAdapter {
    * the same provider-neutral response returned by complete().
    */
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
-    const { response, textDeltas } = this.takeTurn(request);
+    const { response, textDeltas, stream } = this.takeTurn(request);
+    if (stream !== undefined) {
+      for (const event of stream) {
+        request.signal?.throwIfAborted();
+        yield event;
+      }
+      return;
+    }
     for (const delta of textDeltas) {
       request.signal?.throwIfAborted();
       yield { type: "text.delta", delta };
+    }
+    for (const call of response.toolCalls) {
+      request.signal?.throwIfAborted();
+      yield { type: "tool.call", call };
     }
     request.signal?.throwIfAborted();
     yield { type: "response.completed", response };
@@ -84,7 +97,11 @@ export class FakeModel implements Model, ModelAdapter {
 
   private takeTurn(
     request: ModelRequest,
-  ): { response: CompletionResponse; textDeltas: readonly string[] } {
+  ): {
+    response: CompletionResponse;
+    textDeltas: readonly string[];
+    stream?: readonly ModelEvent[];
+  } {
     request.signal?.throwIfAborted();
     this.requests.push(request);
     const seq = this.requests.length;
@@ -121,6 +138,7 @@ export class FakeModel implements Model, ModelAdapter {
 
     return {
       textDeltas,
+      stream: turn.stream,
       response: {
         id: `fake-${seq}`,
         content,

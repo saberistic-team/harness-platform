@@ -1,0 +1,63 @@
+id: m7-deterministic-session-loop
+title: "Implement the deterministic minimal session loop"
+goal: >
+  Extend the landed M6 streaming runtime with versioned message/context state,
+  deterministic multi-round model and pure-tool execution, strict validation,
+  durable authorization ordering, hard budgets, cooperative cancellation, and
+  model deadlines while preserving the legacy runAgent and Model.complete APIs.
+
+acceptance:
+  - AgentRuntime.run completes a deterministic multi-round FakeModel task and
+    durably appends every event before exposing it to the caller
+  - agent.started and agent.stopped bookend exactly one turn.started and
+    turn.completed outcome with exact model, tool, policy, permission, and
+    result ordering
+  - model streaming aggregates ordered text deltas and malformed terminal,
+    finish-reason, usage, text, and tool-intention streams fail with typed errors
+  - message and model-context state use explicit version and monotonic revision
+    fields and every tool observation is present in the next model request
+  - unknown tools and invalid arguments produce typed tool.result observations
+    without deriving authorization or executing a tool
+  - tool.call and an allow, ask, or deny policy.decision are durable before any
+    tool side effect; persistence failure prevents execution
+  - multiple tool rounds, tool failures, allow, ask, deny, and run-scoped
+    permission grants are deterministic and use only fake or registered pure tools
+  - model waits, permission waits, and cooperative tool calls can be canceled;
+    model deadlines abort the request and leave no active work
+  - hard step, cumulative token, and tool-call budgets stop at their boundaries
+    with budget.warning evidence and exactly one terminal run outcome
+  - legacy runAgent, Model.complete, M6 streaming callers, and offline tests remain green
+  - EVENTS.md documents all changed event semantics and pnpm test and pnpm typecheck pass
+
+allowed_paths:
+  - EVENTS.md
+  - packages/events/**
+  - packages/kernel/**
+  - packages/models/**
+  - tasks/m7-deterministic-session-loop.yaml
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test": allow
+    "pnpm typecheck": allow
+    "pnpm --filter @harness/events test": allow
+    "pnpm --filter @harness/kernel test": allow
+    "pnpm --filter @harness/models test": allow
+    "pnpm harness validate tasks/m7-deterministic-session-loop.yaml": allow
+    "pnpm harness run tasks/m7-deterministic-session-loop.yaml": allow
+    "git status*": allow
+    "git diff*": allow
+    "git log*": allow
+    "git rev-parse*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 200
+
+delivery:
+  type: pull_request

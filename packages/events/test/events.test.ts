@@ -25,26 +25,26 @@ function samples(): Array<{ type: EventType; event: AnyHarnessEvent }> {
   return [
     { type: "session.created", event: createEvent("session.created", { sessionId: "sess-1", workspace: "ws-1" }, opts) },
     { type: "session.restored", event: createEvent("session.restored", { sessionId: "sess-1", afterSeq: 3, availableThroughSeq: 8, availableEvents: 5, outcome: "completed" }, opts) },
-    { type: "agent.started", event: createEvent("agent.started", { agentId: "ag-1", sessionId: "sess-1", taskId: "kernel-0001", model: "fake-model/v1" }, opts) },
-    { type: "agent.stopped", event: createEvent("agent.stopped", { agentId: "ag-1", status: "completed", steps: 3, toolCalls: 1 }, opts) },
+    { type: "agent.started", event: createEvent("agent.started", { agentId: "ag-1", sessionId: "sess-1", taskId: "kernel-0001", model: "fake-model/v1", runId: "run-1", turnId: "turn-1" }, opts) },
+    { type: "agent.stopped", event: createEvent("agent.stopped", { agentId: "ag-1", status: "completed", steps: 3, toolCalls: 1, runId: "run-1", sessionId: "sess-1", turnId: "turn-1" }, opts) },
     { type: "turn.started", event: createEvent("turn.started", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", inputMessageId: "msg-user-1" }, opts) },
     { type: "message.delta", event: createEvent("message.delta", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", requestId: "req-1", messageId: "msg-assistant-1", role: "assistant", sequence: 0, delta: "hello" }, opts) },
-    { type: "message.completed", event: createEvent("message.completed", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", requestId: "req-1", messageId: "msg-assistant-1", role: "assistant", content: "hello", finishReason: "stop" }, opts) },
+    { type: "message.completed", event: createEvent("message.completed", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", requestId: "req-1", messageId: "msg-assistant-1", role: "assistant", content: "hello", finishReason: "stop", stateVersion: 1, messageRevision: 2 }, opts) },
     { type: "steering.queued", event: createEvent("steering.queued", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", messageId: "msg-steer-1", content: "also check the tests" }, opts) },
     { type: "context.compacted", event: createEvent("context.compacted", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", requestId: "req-compact-1", summaryMessageId: "msg-summary-1", summary: "Earlier work summarized.", beforeMessages: 20, afterMessages: 6, beforeTokens: 8_000, afterTokens: 2_000 }, opts) },
-    { type: "turn.completed", event: createEvent("turn.completed", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", status: "completed", outputMessageId: "msg-assistant-1", modelRequests: 1, toolCalls: 0 }, opts) },
-    { type: "model.request", event: createEvent("model.request", { requestId: "req-1", model: "fake-model/v1", messageCount: 2 }, opts) },
+    { type: "turn.completed", event: createEvent("turn.completed", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", status: "completed", outputMessageId: "msg-assistant-1", modelRequests: 1, toolCalls: 0, usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 }, stateVersion: 1, messageRevision: 2, note: "finished" }, opts) },
+    { type: "model.request", event: createEvent("model.request", { requestId: "req-1", model: "fake-model/v1", messageCount: 2, runId: "run-1", sessionId: "sess-1", turnId: "turn-1", step: 1, contextVersion: 1, messageRevision: 1 }, opts) },
     {
       type: "model.response",
-      event: createEvent("model.response", { requestId: "req-1", model: "fake-model/v1", finishReason: "stop", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } }, opts),
+      event: createEvent("model.response", { requestId: "req-1", model: "fake-model/v1", finishReason: "stop", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 }, runId: "run-1", sessionId: "sess-1", turnId: "turn-1" }, opts),
     },
-    { type: "tool.call", event: createEvent("tool.call", { callId: "call-1", tool: "read_file", input: { path: "README.md" } }, opts) },
-    { type: "tool.result", event: createEvent("tool.result", { callId: "call-1", tool: "read_file", ok: true, output: "hello", durationMs: 3 }, opts) },
+    { type: "tool.call", event: createEvent("tool.call", { callId: "call-1", tool: "read_file", input: { path: "README.md" }, runId: "run-1", sessionId: "sess-1", turnId: "turn-1", requestId: "req-1", modelCallId: "model-call-1" }, opts) },
+    { type: "tool.result", event: createEvent("tool.result", { callId: "call-1", tool: "read_file", ok: true, output: "hello", durationMs: 3, runId: "run-1", sessionId: "sess-1", turnId: "turn-1" }, opts) },
     { type: "task.updated", event: createEvent("task.updated", { taskId: "kernel-0001", phase: "running", note: "started" }, opts) },
-    { type: "budget.warning", event: createEvent("budget.warning", { taskId: "kernel-0001", metric: "tokens", used: 50_000, limit: 100_000, pct: 50 }, opts) },
-    { type: "policy.decision", event: createEvent("policy.decision", { taskId: "kernel-0001", sessionId: "sess-1", runId: "run-1", action: "process.exec", subject: "pnpm test", effect: "allow", reason: "pattern pnpm test*", ruleId: "perm-1" }, opts) },
-    { type: "permission.requested", event: createEvent("permission.requested", { permissionId: "perm-1", sessionId: "sess-1", callId: "call-1", action: "process.exec", subject: "pnpm install", scope: "once", reason: "operator approval required" }, opts) },
-    { type: "permission.resolved", event: createEvent("permission.resolved", { permissionId: "perm-1", sessionId: "sess-1", callId: "call-1", action: "process.exec", subject: "pnpm install", scope: "once", decision: "deny", note: "operator denied" }, opts) },
+    { type: "budget.warning", event: createEvent("budget.warning", { taskId: "kernel-0001", runId: "run-1", sessionId: "sess-1", turnId: "turn-1", metric: "steps", used: 4, limit: 8, pct: 50 }, opts) },
+    { type: "policy.decision", event: createEvent("policy.decision", { taskId: "kernel-0001", sessionId: "sess-1", runId: "run-1", turnId: "turn-1", callId: "call-1", action: "process.exec", subject: "pnpm test", effect: "allow", reason: "pattern pnpm test*", ruleId: "perm-1" }, opts) },
+    { type: "permission.requested", event: createEvent("permission.requested", { permissionId: "perm-1", sessionId: "sess-1", runId: "run-1", turnId: "turn-1", callId: "call-1", action: "process.exec", subject: "pnpm install", scope: "once", reason: "operator approval required" }, opts) },
+    { type: "permission.resolved", event: createEvent("permission.resolved", { permissionId: "perm-1", sessionId: "sess-1", runId: "run-1", turnId: "turn-1", callId: "call-1", action: "process.exec", subject: "pnpm install", scope: "once", decision: "deny", note: "operator denied" }, opts) },
     { type: "sandbox.started", event: createEvent("sandbox.started", { runId: "run-1", containerName: "ctr-1", image: "harness-sandbox:local", network: "none", mounts: 2 }, opts) },
     { type: "sandbox.stopped", event: createEvent("sandbox.stopped", { runId: "run-1", containerName: "ctr-1", status: "completed", exitCode: 0, durationMs: 12 }, opts) },
     { type: "run.recorded", event: createEvent("run.recorded", { runId: "run-1", taskId: "kernel-0001", status: "passed", reportPath: "tasks/runs/report.json" }, opts) },
@@ -89,6 +89,84 @@ describe("event round-trip", () => {
     expect(samples().map(({ type }) => type)).toEqual(Object.keys(eventSchemas));
     for (const { type, event } of samples()) {
       expect(eventSchemas[type].safeParse(event).success).toBe(true);
+    }
+  });
+
+  it("continues to decode legacy runtime payloads without M7 optional fields", () => {
+    const opts = { eventId: FIXED_ID, at: FIXED_AT, actor: "kernel" };
+    const legacy = [
+      createEvent("agent.started", {
+        agentId: "ag-1",
+        sessionId: "sess-1",
+        model: "fake-model/v1",
+      }, opts),
+      createEvent("agent.stopped", {
+        agentId: "ag-1",
+        status: "completed",
+        steps: 1,
+        toolCalls: 0,
+      }, opts),
+      createEvent("message.completed", {
+        runId: "run-1",
+        sessionId: "sess-1",
+        turnId: "turn-1",
+        messageId: "msg-user-1",
+        role: "user",
+        content: "hello",
+      }, opts),
+      createEvent("turn.completed", {
+        runId: "run-1",
+        sessionId: "sess-1",
+        turnId: "turn-1",
+        status: "completed",
+        modelRequests: 1,
+        toolCalls: 0,
+      }, opts),
+      createEvent("model.request", {
+        requestId: "req-1",
+        model: "fake-model/v1",
+        messageCount: 1,
+      }, opts),
+      createEvent("model.response", {
+        requestId: "req-1",
+        model: "fake-model/v1",
+        finishReason: "stop",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      }, opts),
+      createEvent("tool.call", {
+        callId: "call-1",
+        tool: "echo",
+        input: {},
+      }, opts),
+      createEvent("tool.result", {
+        callId: "call-1",
+        tool: "echo",
+        ok: true,
+        output: "ok",
+      }, opts),
+      createEvent("budget.warning", {
+        metric: "tokens",
+        used: 5,
+        limit: 10,
+        pct: 50,
+      }, opts),
+      createEvent("permission.requested", {
+        permissionId: "perm-1",
+        sessionId: "sess-1",
+        action: "network",
+        scope: "once",
+      }, opts),
+      createEvent("permission.resolved", {
+        permissionId: "perm-1",
+        sessionId: "sess-1",
+        action: "network",
+        scope: "once",
+        decision: "deny",
+      }, opts),
+    ];
+
+    for (const event of legacy) {
+      expect(deserializeEvent(serializeEvent(event))).toEqual(event);
     }
   });
 
@@ -158,6 +236,27 @@ describe("event round-trip", () => {
 
     expect(deserializeEvent(serializeEvent(event))).toEqual(event);
   });
+
+  it("round-trips a strict versioned tool observation message", () => {
+    const event = createEvent("message.completed", {
+      runId: "run-1",
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      messageId: "msg-tool-1",
+      role: "tool",
+      name: "echo",
+      toolCallId: "model-call-1",
+      content: "{\"ok\":true}",
+      stateVersion: 1,
+      messageRevision: 3,
+    }, {
+      eventId: FIXED_ID,
+      at: FIXED_AT,
+      actor: "kernel",
+    });
+
+    expect(deserializeEvent(serializeEvent(event))).toEqual(event);
+  });
 });
 
 describe("runtime event schemas", () => {
@@ -190,6 +289,81 @@ describe("runtime event schemas", () => {
       role: "assistant",
       content: "hello",
       finishReason: "stop",
+    }))).toThrow(EventSchemaError);
+  });
+
+  it("requires paired version and revision fields on messages and model context", () => {
+    expect(() => deserializeEvent(envelope("message.completed", {
+      ...identity,
+      role: "user",
+      content: "hello",
+      stateVersion: 1,
+    }))).toThrow(EventSchemaError);
+
+    expect(() => deserializeEvent(envelope("message.completed", {
+      ...identity,
+      role: "tool",
+      name: "echo",
+      toolCallId: "model-call-1",
+      content: "ok",
+      messageRevision: 2,
+    }))).toThrow(EventSchemaError);
+
+    expect(() => deserializeEvent(envelope("model.request", {
+      requestId: "req-1",
+      model: "fake-model/v1",
+      messageCount: 1,
+      contextVersion: 1,
+    }))).toThrow(EventSchemaError);
+
+    expect(() => deserializeEvent(envelope("model.request", {
+      requestId: "req-1",
+      model: "fake-model/v1",
+      messageCount: 1,
+      messageRevision: 1,
+    }))).toThrow(EventSchemaError);
+
+    expect(() => deserializeEvent(envelope("turn.completed", {
+      runId: "run-1",
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      status: "completed",
+      modelRequests: 1,
+      toolCalls: 0,
+      stateVersion: 1,
+    }))).toThrow(EventSchemaError);
+  });
+
+  it("rejects malformed tool observations and unsafe request revisions", () => {
+    expect(() => deserializeEvent(envelope("message.completed", {
+      ...identity,
+      role: "tool",
+      name: "echo",
+      content: "ok",
+    }))).toThrow(EventSchemaError);
+
+    expect(() => deserializeEvent(envelope("message.completed", {
+      ...identity,
+      role: "tool",
+      name: "echo",
+      toolCallId: "model-call-1",
+      requestId: "req-1",
+      content: "ok",
+    }))).toThrow(EventSchemaError);
+
+    expect(() => deserializeEvent(envelope("model.request", {
+      requestId: "req-1",
+      model: "fake-model/v1",
+      messageCount: 1,
+      step: 0,
+    }))).toThrow(EventSchemaError);
+
+    expect(() => deserializeEvent(envelope("model.request", {
+      requestId: "req-1",
+      model: "fake-model/v1",
+      messageCount: 1,
+      contextVersion: 1,
+      messageRevision: Number.MAX_SAFE_INTEGER + 1,
     }))).toThrow(EventSchemaError);
   });
 

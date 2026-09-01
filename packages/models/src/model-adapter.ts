@@ -9,9 +9,9 @@ import {
  * Compatibility adapter from the original one-shot Model API to the minimal
  * kernel's streaming boundary.
  *
- * A completion model cannot expose genuine provider deltas, so a successful
- * call emits exactly one terminal event. Errors are allowed to propagate and
- * no terminal event is fabricated after cancellation.
+ * A completion model cannot expose genuine provider text deltas. A successful
+ * call emits its complete tool intentions, followed by one terminal event.
+ * Errors propagate and no terminal event is fabricated after cancellation.
  */
 export class CompleteModelAdapter implements ModelAdapter {
   constructor(readonly model: Model) {}
@@ -23,13 +23,22 @@ export class CompleteModelAdapter implements ModelAdapter {
       request.signal,
     );
     request.signal?.throwIfAborted();
+    for (const call of response.toolCalls) {
+      request.signal?.throwIfAborted();
+      yield { type: "tool.call", call };
+    }
+    request.signal?.throwIfAborted();
     yield { type: "response.completed", response };
   }
 }
 
-/** Adapt an existing completion-based model without changing the model. */
-export function adaptModel(model: Model): ModelAdapter {
-  return new CompleteModelAdapter(model);
+function isModelAdapter(model: Model | ModelAdapter): model is ModelAdapter {
+  return "stream" in model && typeof model.stream === "function";
+}
+
+/** Preserve native streams and adapt only legacy completion-based models. */
+export function adaptModel(model: Model | ModelAdapter): ModelAdapter {
+  return isModelAdapter(model) ? model : new CompleteModelAdapter(model);
 }
 
 function waitForCompletion<T>(
