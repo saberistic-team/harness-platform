@@ -102,7 +102,7 @@ branch, scope, test, failure, Git, or `run.recorded` receipt evidence.
 - [`AGENTS.md`](AGENTS.md) — rules of engagement (read this first)
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — the package contract
 - [`EVENTS.md`](EVENTS.md) — the event stream reference
-- [`ROADMAP.md`](ROADMAP.md) — milestones (M0–M5 ✅)
+- [`ROADMAP.md`](ROADMAP.md) — milestones (M0–M7 complete; M8–M12 planned)
 - [`SECURITY.md`](SECURITY.md) — sandbox and boundary model
 
 ## Definition of done
@@ -176,9 +176,11 @@ environment overlay; do not apply the base directly.
 
 ## Status
 
-M0–M5 are complete: foundation, operator loop, eval credibility, the
-permissioned service boundary, the durable control plane, and the conditional
-polyglot review. M5 found no measured reason to add a second runtime, so the
-platform remains TypeScript / Node ≥ 22. See [ROADMAP](ROADMAP.md) for the
-milestone record and [ARCHITECTURE](ARCHITECTURE.md#m5-decision--retain-typescriptnode)
-for the decision and reopening criteria.
+M0–M7 are complete: foundation, operator loop, eval credibility, the
+permissioned service boundary, the durable control plane, the conditional
+polyglot review, the runtime contracts, and the deterministic minimal session
+loop. M5 found no measured reason to add a second runtime, so the platform
+remains TypeScript / Node ≥ 22. M8–M12 remain planned. See
+[ROADMAP](ROADMAP.md) for the milestone record and
+[ARCHITECTURE](ARCHITECTURE.md#m5-decision--retain-typescriptnode) for the
+language decision and reopening criteria.
