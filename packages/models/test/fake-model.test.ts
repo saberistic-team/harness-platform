@@ -132,6 +132,54 @@ describe("FakeModel", () => {
     });
   });
 
+  it("streams complete tool intentions before the matching terminal response", async () => {
+    const call = { id: "call-1", name: "echo", arguments: { value: 1 } };
+    const model = new FakeModel([{ toolCalls: [call], usage: usage(1) }]);
+
+    const events = await collect(model.stream({
+      messages: [],
+      contextVersion: 1,
+      messageRevision: 2,
+    }));
+
+    expect(events).toEqual([
+      { type: "tool.call", call },
+      {
+        type: "response.completed",
+        response: {
+          id: "fake-1",
+          content: "",
+          toolCalls: [call],
+          usage: usage(1),
+          finishReason: "tool_calls",
+        },
+      },
+    ]);
+    expect(model.requests[0]).toMatchObject({
+      contextVersion: 1,
+      messageRevision: 2,
+    });
+  });
+
+  it("replays an exact scripted stream without repairing malformed order", async () => {
+    const scripted: ModelEvent[] = [
+      {
+        type: "response.completed",
+        response: {
+          id: "early",
+          content: "",
+          toolCalls: [],
+          usage: usage(0),
+          finishReason: "stop",
+        },
+      },
+      { type: "text.delta", delta: "late" },
+    ];
+    const model = new FakeModel([{ stream: scripted }]);
+
+    await expect(collect(model.stream({ messages: [] }))).resolves.toEqual(scripted);
+  });
+
   it("omits empty chunks while preserving completed content", async () => {
     const model = new FakeModel([
       { content: "ab", textDeltas: ["", "a", "", "b", ""] },

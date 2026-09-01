@@ -30,6 +30,7 @@ const messageContent = z.string().max(16 * 1024 * 1024);
 const messageDeltaContent = z.string().min(1).max(1024 * 1024);
 const steeringContent = z.string().min(1).max(256 * 1024);
 const eventCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const positiveEventCount = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 
 const runtimeIdentity = {
   runId: id,
@@ -41,6 +42,31 @@ const messageIdentity = {
   ...runtimeIdentity,
   messageId: id,
 } as const;
+
+const optionalRuntimeIdentity = {
+  runId: id.optional(),
+  sessionId: id.optional(),
+  turnId: id.optional(),
+} as const;
+
+const optionalMessageState = {
+  stateVersion: z.literal(1).optional(),
+  messageRevision: eventCount.optional(),
+} as const;
+
+function requireVersionRevisionPair(
+  value: Record<string, unknown>,
+  versionField: "stateVersion" | "contextVersion",
+  context: z.RefinementCtx,
+): void {
+  if ((value[versionField] === undefined) !== (value.messageRevision === undefined)) {
+    context.addIssue({
+      code: "custom",
+      message: `${versionField} and messageRevision must be provided together`,
+      path: [versionField],
+    });
+  }
+}
 
 function strictObjectData<D extends z.ZodTypeAny>(data: D): D {
   return (data instanceof z.ZodObject ? data.strict() : data) as D;
@@ -83,6 +109,8 @@ export const agentStarted = envelope(
     sessionId: id,
     taskId: id.optional(),
     model: id,
+    runId: id.optional(),
+    turnId: id.optional(),
   }),
 );
 
@@ -94,6 +122,7 @@ export const agentStopped = envelope(
     steps: z.number().int().nonnegative(),
     toolCalls: z.number().int().nonnegative(),
     note: z.string().optional(),
+    ...optionalRuntimeIdentity,
   }),
 );
 
@@ -129,14 +158,30 @@ export const messageCompleted = envelope(
       ...messageIdentity,
       role: z.literal("user"),
       content: messageContent.min(1),
-    }).strict(),
+      ...optionalMessageState,
+    }).strict().superRefine((value, context) => {
+      requireVersionRevisionPair(value, "stateVersion", context);
+    }),
     z.object({
       ...messageIdentity,
       requestId: id,
       role: z.literal("assistant"),
       content: messageContent,
       finishReason: modelFinishReason,
-    }).strict(),
+      ...optionalMessageState,
+    }).strict().superRefine((value, context) => {
+      requireVersionRevisionPair(value, "stateVersion", context);
+    }),
+    z.object({
+      ...messageIdentity,
+      role: z.literal("tool"),
+      name: id,
+      toolCallId: id,
+      content: messageContent,
+      ...optionalMessageState,
+    }).strict().superRefine((value, context) => {
+      requireVersionRevisionPair(value, "stateVersion", context);
+    }),
   ]),
 );
 
@@ -198,6 +243,11 @@ export const turnCompleted = envelope(
     outputMessageId: id.optional(),
     modelRequests: eventCount,
     toolCalls: eventCount,
+    usage: usage.optional(),
+    ...optionalMessageState,
+    note: z.string().optional(),
+  }).strict().superRefine((value, context) => {
+    requireVersionRevisionPair(value, "stateVersion", context);
   }),
 );
 
@@ -207,6 +257,12 @@ export const modelRequest = envelope(
     requestId: id,
     model: id,
     messageCount: z.number().int().positive(),
+    ...optionalRuntimeIdentity,
+    step: positiveEventCount.optional(),
+    contextVersion: z.literal(1).optional(),
+    messageRevision: eventCount.optional(),
+  }).strict().superRefine((value, context) => {
+    requireVersionRevisionPair(value, "contextVersion", context);
   }),
 );
 
@@ -217,6 +273,7 @@ export const modelResponse = envelope(
     model: id,
     finishReason: modelFinishReason,
     usage,
+    ...optionalRuntimeIdentity,
   }),
 );
 
@@ -226,6 +283,9 @@ export const toolCall = envelope(
     callId: id,
     tool: id,
     input: z.unknown(),
+    ...optionalRuntimeIdentity,
+    requestId: id.optional(),
+    modelCallId: id.optional(),
   }),
 );
 
@@ -240,6 +300,7 @@ export const toolResult = envelope(
       .object({ code: id, message: z.string() })
       .optional(),
     durationMs: z.number().nonnegative().optional(),
+    ...optionalRuntimeIdentity,
   }),
 );
 
@@ -262,7 +323,8 @@ export const budgetWarning = envelope(
   "budget.warning",
   z.object({
     taskId: id.optional(),
-    metric: z.enum(["tokens", "tool_calls"]),
+    ...optionalRuntimeIdentity,
+    metric: z.enum(["steps", "tokens", "tool_calls"]),
     used: z.number().nonnegative(),
     limit: z.number().nonnegative(),
     pct: z.number().min(0),
@@ -270,24 +332,32 @@ export const budgetWarning = envelope(
 );
 
 const policyDecisionFields = {
-    action: id,
-    subject: z.string().optional(),
-    effect: z.enum(["allow", "ask", "deny"]),
-    reason: z.string().optional(),
-    ruleId: id.optional(),
+  action: id,
+  subject: z.string().optional(),
+  effect: z.enum(["allow", "ask", "deny"]),
+  reason: z.string().optional(),
+  ruleId: id.optional(),
 } as const;
 
 export const policyDecision = envelope(
   "policy.decision",
   z.union([
     z.object({
+      taskId: id.optional(),
+      sessionId: id,
+      runId: id,
+      turnId: id,
+      callId: id,
+      ...policyDecisionFields,
+    }).strict(),
+    z.object({
       taskId: id,
       sessionId: id,
       runId: id,
       ...policyDecisionFields,
     }).strict(),
-    // Historical/non-task producers remain decodable, but partial attribution
-    // is never accepted: an attributable decision carries the complete tuple.
+    // Historical task-attributed and bare producers remain decodable. New
+    // runtime decisions use the first branch so call fencing is explicit.
     z.object(policyDecisionFields).strict(),
   ]),
 );
@@ -299,6 +369,8 @@ export const permissionRequested = envelope(
   z.object({
     permissionId: id,
     sessionId: id,
+    runId: id.optional(),
+    turnId: id.optional(),
     callId: id.optional(),
     action: id,
     subject: z.string().optional(),
@@ -312,6 +384,8 @@ export const permissionResolved = envelope(
   z.object({
     permissionId: id,
     sessionId: id,
+    runId: id.optional(),
+    turnId: id.optional(),
     callId: id.optional(),
     action: id,
     subject: z.string().optional(),

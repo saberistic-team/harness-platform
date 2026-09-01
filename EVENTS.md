@@ -43,23 +43,23 @@ Rules:
 | ---------------- | --------------------------------------- | --------------------------------- |
 | `session.created`| a session opens                         | `sessionId`, `workspace?`         |
 | `session.restored` | an interrupted durable session is reconciled for replay | `sessionId`, `afterSeq`, `outcome` |
-| `agent.started`  | the kernel loop starts                  | `agentId`, `sessionId`, `model`   |
-| `agent.stopped`  | the loop ends for any reason            | `status`, `steps`, `toolCalls`    |
+| `agent.started`  | the kernel loop starts                  | `agentId`, `sessionId`, `model`, `runId?`, `turnId?` |
+| `agent.stopped`  | the kernel loop ends for any reason     | `status`, `steps`, `toolCalls`, `runId?`, `sessionId?`, `turnId?` |
 | `turn.started`   | a caller-identified runtime turn is admitted | `runId`, `sessionId`, `turnId`, `inputMessageId` |
 | `message.delta`  | an ordered assistant-text chunk is durable | `runId`, `turnId`, `requestId`, `messageId`, `sequence`, `delta` |
-| `message.completed` | a complete user or assistant message is durable | `runId`, `turnId`, `messageId`, `role`, `content`, `requestId?` |
+| `message.completed` | a complete user, assistant, or tool message is durable | `runId`, `turnId`, `messageId`, `role`, `content`, `stateVersion?`, `messageRevision?` |
 | `steering.queued` | an active run accepts a steering message | `runId`, `sessionId`, `turnId`, `messageId`, `content` |
 | `context.compacted` | a smaller replayable context replaces prior context | `runId`, `turnId`, `summaryMessageId`, `beforeMessages`, `afterMessages` |
-| `turn.completed` | one admitted turn reaches a terminal outcome | `runId`, `sessionId`, `turnId`, `status`, `modelRequests`, `toolCalls` |
-| `model.request`  | a model turn is dispatched              | `requestId`, `model`              |
-| `model.response` | a model turn returns                    | `requestId`, `finishReason`, `usage` |
-| `tool.call`      | a tool is invoked                       | `callId`, `tool`, `input`         |
-| `tool.result`    | a tool returns (ok or error)            | `callId`, `ok`, `output|error`    |
+| `turn.completed` | one admitted turn reaches a terminal outcome | `runId`, `sessionId`, `turnId`, `status`, `modelRequests`, `toolCalls`, `usage?`, `stateVersion?`, `messageRevision?` |
+| `model.request`  | a model step is durably dispatched      | `requestId`, `model`, `runId?`, `sessionId?`, `turnId?`, `step?`, `contextVersion?`, `messageRevision?` |
+| `model.response` | a model step returns                    | `requestId`, `finishReason`, `usage`, `runId?`, `sessionId?`, `turnId?` |
+| `tool.call`      | a model's requested tool intent is durable | `callId`, `tool`, `input`, `requestId?`, `modelCallId?` |
+| `tool.result`    | a tool attempt or typed pre-execution failure completes | `callId`, `ok`, `output|error`, `runId?`, `sessionId?`, `turnId?` |
 | `task.updated`   | a manifest's phase changes              | `taskId`, `phase`                 |
-| `budget.warning` | a budget threshold is crossed           | `metric`, `used`, `limit`, `pct`  |
-| `policy.decision`| policy engine rules on an action        | `taskId?`, `sessionId?`, `runId?`, `action`, `effect`, `reason` |
-| `permission.requested` | an `ask` pauses before a side effect | `permissionId`, `sessionId`, `action`, `scope` |
-| `permission.resolved` | an operator resolves one pending ask | `permissionId`, `decision`, `scope` |
+| `budget.warning` | a step, token, or tool-call threshold is crossed | `metric`, `used`, `limit`, `pct`, `runId?`, `sessionId?`, `turnId?` |
+| `policy.decision`| policy engine rules on an action        | `taskId?`, `sessionId?`, `runId?`, `turnId?`, `callId?`, `action`, `effect`, `reason` |
+| `permission.requested` | an `ask` pauses before a side effect | `permissionId`, `sessionId`, `runId?`, `turnId?`, `action`, `scope` |
+| `permission.resolved` | a pending ask receives an allow/deny resolution | `permissionId`, `sessionId`, `runId?`, `turnId?`, `decision`, `scope` |
 | `sandbox.started` | a completed Docker run proves an owned container existed | `runId`, `containerName`, `image`, `network`, `mounts` |
 | `sandbox.stopped` | execution ends and owned-container cleanup is verified | `runId`, `containerName`, `status`, `exitCode?`, `durationMs` |
 | `run.recorded`   | a run report is atomically committed    | `runId`, `taskId`, `status`, `reportPath` |
@@ -107,17 +107,38 @@ does not pull another model chunk until the consumer advances after the current
 yielded event. Externally invoked controls may independently append their own
 events while the producer is backpressured.
 
-A deterministic text-only turn has this exact order:
+A deterministic M7 multi-round tool turn has this exact order. The model may
+repeat the bracketed model/tool segment as many times as its hard budgets
+permit:
 
 ```text
+agent.started
 turn.started
 message.completed (role=user)
 model.request
 message.delta (role=assistant, sequence=0..n-1; zero or more)
-model.response
+model.response (finishReason=tool_calls)
+message.completed (role=assistant)
+tool.call (requested intent; the tool has not executed)
+policy.decision (effect=allow|ask|deny)
+permission.requested (ask only)
+permission.resolved (ask only)
+... only an allowed and durably decided tool executes ...
+tool.result
+message.completed (role=tool; observation enters context)
+model.request
+... more text/tool rounds as needed ...
+model.response (finishReason=stop)
 message.completed (role=assistant)
 turn.completed (status=completed)
+agent.stopped (status=completed)
 ```
+
+`agent.started` and `agent.stopped` bookend the run for every outcome. Exactly
+one `turn.completed` precedes the stop event when its terminal append succeeds;
+cancellation, timeout, failure, and hard-budget exhaustion use the matching
+terminal status. A text-only turn is the same sequence with the tool segment
+omitted.
 
 `turn.started.inputMessageId` identifies the immediately following durable user
 message. Each assistant delta carries the request and message identities; its
@@ -126,14 +147,24 @@ were emitted, concatenating them equals the assistant
 `message.completed.content`. A model may emit no deltas and return nonempty
 completed content, so the completed message is always the replayable source of
 truth. Assistant messages carry `requestId` and `finishReason`; user messages
-reject those model-only fields.
+reject those model-only fields. Tool messages strictly carry `name` and the
+provider's `toolCallId` so the next model context can associate an observation
+with the requested call.
+
+New runtime producers attach `stateVersion: 1` and a monotonic
+`messageRevision` to each completed message. A `model.request` records
+`contextVersion: 1` together with the exact revision used to build that
+request; either both fields are present or neither is. `turn.completed` may
+carry the final state version, revision, cumulative usage, and a human-readable
+note. These fields are additive so legacy event payloads remain
+valid.
 
 `steering.queued` is appended before `steer()` resolves and its `messageId`
 becomes the durable identity used when the queued content enters context at the
-next model boundary. M6 has one such boundary: a steering call that linearizes
-after the sole `model.request` is rejected with a typed error instead of
-persisting content that cannot be consumed. Steering an unknown or terminal run
-is also a typed error. Canceling an active run is idempotent; abandoning its
+first model boundary. A steering call that linearizes after that boundary is
+rejected with a typed error instead of persisting content that cannot be
+consumed. Steering an unknown or terminal run is also a typed error. Canceling
+an active run is idempotent; abandoning its
 iterator has the same cancellation semantics and still durably terminates the
 turn, even though the abandoning consumer cannot receive that final event. A
 failed terminal append rejects cancellation or abandonment with the typed store
@@ -148,7 +179,18 @@ request.
 
 Tool-loop producers continue to use `tool.call`, `policy.decision`, and
 `tool.result` for requested intent, the persisted policy outcome, and completed
-work. The policy decision is durable before any permitted side effect begins.
+work. `tool.call` never means that execution already occurred. The intent is
+durable before policy is derived, and the policy decision plus any permission
+resolution are durable before any permitted side effect begins. Unknown tools
+and invalid arguments follow `tool.call` with a typed failed `tool.result` and
+do not derive authorization or execute a tool. New runtime policy decisions
+carry the same `sessionId`, `runId`, `turnId`, and `callId` as the fenced call;
+historical task-attributed and unattributed payloads remain decodable. The
+runtime snapshots bounded ordinary JSON for the intent and validated input, so
+model, event-consumer, and authorization mutations cannot change what later
+executes. When a requested call crosses the hard tool-call limit, that intent
+is still durable, followed by `budget.warning`; no policy is derived and the
+over-limit call does not execute.
 
 ## Permission ordering
 
@@ -166,8 +208,10 @@ tool.result
 `permissionId` is single-use and scoped to its `sessionId`. A hard policy
 `deny` cannot be overridden and therefore emits no permission request.
 Missing resolvers, EOF, disconnects, cancellation, and timeouts resolve as
-denial. The agent-server redacts sensitive tool and permission payloads before
-events are persisted or sent over ACP.
+denial. A resolver-produced resolution uses the `operator` actor; a denial
+synthesized by the runtime uses the `kernel` actor. The agent-server redacts
+sensitive tool and permission payloads before events are persisted or sent over
+ACP.
 
 ## Exit-gate decisions and failure evidence
 

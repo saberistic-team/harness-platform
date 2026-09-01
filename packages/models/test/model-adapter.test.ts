@@ -4,6 +4,7 @@ import {
   adaptModel,
   type CompletionResponse,
   type Model,
+  type ModelAdapter,
   type ModelEvent,
   type ModelRequest,
 } from "../src";
@@ -25,7 +26,7 @@ async function collect(events: AsyncIterable<ModelEvent>): Promise<ModelEvent[]>
 }
 
 describe("CompleteModelAdapter", () => {
-  it("forwards the full request unchanged and emits legacy parity as one terminal event", async () => {
+  it("forwards the full request and emits tool intentions before legacy parity", async () => {
     let captured: ModelRequest | undefined;
     const legacy: Model = {
       name: "legacy-test",
@@ -49,13 +50,18 @@ describe("CompleteModelAdapter", () => {
       system: "system prompt",
       providerOptions: { seed: 1 },
       signal: controller.signal,
+      contextVersion: 1,
+      messageRevision: 4,
     };
 
     const events = await collect(adaptModel(legacy).stream(request));
 
     expect(captured).toBe(request);
-    expect(events).toEqual([{ type: "response.completed", response }]);
-    expect(events[0]).toMatchObject({
+    expect(events).toEqual([
+      { type: "tool.call", call: response.toolCalls[0] },
+      { type: "response.completed", response },
+    ]);
+    expect(events[1]).toMatchObject({
       type: "response.completed",
       response: { toolCalls: response.toolCalls },
     });
@@ -119,5 +125,16 @@ describe("CompleteModelAdapter", () => {
 
     await expect(pending).rejects.toBe(reason);
     resolveCompletion?.(response);
+  });
+
+  it("preserves native streaming adapters instead of wrapping them", () => {
+    const native: ModelAdapter = {
+      async *stream() {
+        yield { type: "text.delta", delta: "native" };
+        yield { type: "response.completed", response };
+      },
+    };
+
+    expect(adaptModel(native)).toBe(native);
   });
 });
