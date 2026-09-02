@@ -121,6 +121,33 @@ describe("agent-server provider model environment configuration", () => {
     expect(registry.models[registry.defaultModel]!()).toBeInstanceOf(FakeModel);
   });
 
+  it("passes an explicit bounded provider timeout to the model", () => {
+    const registry = modelRegistryFromEnvironment({
+      ...providerEnvironment,
+      HARNESS_MODEL_TIMEOUT_MS: "180000",
+    });
+    const model = registry.models[registry.defaultModel]!() as unknown as {
+      timeoutMs: number;
+    };
+    expect(model.timeoutMs).toBe(180_000);
+  });
+
+  it.each(["", "0", "-1", "1.5", " 180000", "2147483648", "NaN"])(
+    "rejects invalid provider timeout %j",
+    (value) => {
+      expect(() => modelRegistryFromEnvironment({
+        ...providerEnvironment,
+        HARNESS_MODEL_TIMEOUT_MS: value,
+      })).toThrow("HARNESS_MODEL_TIMEOUT_MS");
+    },
+  );
+
+  it("rejects a provider timeout without provider selectors", () => {
+    expect(() => modelRegistryFromEnvironment({
+      HARNESS_MODEL_TIMEOUT_MS: "180000",
+    })).toThrow("requires HARNESS_MODEL_ID and HARNESS_MODEL_BASE_URL");
+  });
+
   it.each([
     { HARNESS_MODEL_ID: "provider-model" },
     { HARNESS_MODEL_BASE_URL: "https://provider.example/v1" },

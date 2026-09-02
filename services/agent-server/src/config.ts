@@ -31,6 +31,7 @@ const SANDBOX_ENVIRONMENT_KEYS = [
 // result and session/new request schemas.
 const ACP_MODEL_NAME_MAX_LENGTH = 256;
 const MAX_PROVIDER_HEADER_VALUE_LENGTH = 16_384;
+const MAX_PROVIDER_TIMEOUT_MS = 2_147_483_647;
 
 function nonEmptyEnvironmentValue(
   env: NodeJS.ProcessEnv,
@@ -54,6 +55,25 @@ function exactBooleanEnvironmentValue(
   if (value === "true") return true;
   if (value === "false") return false;
   throw new Error(`${name} must be exactly "true" or "false" when set`);
+}
+
+function providerTimeoutEnvironmentValue(
+  env: NodeJS.ProcessEnv,
+): number | undefined {
+  const value = env.HARNESS_MODEL_TIMEOUT_MS;
+  if (value === undefined) return undefined;
+  if (!/^[1-9][0-9]*$/u.test(value)) {
+    throw new Error(
+      "HARNESS_MODEL_TIMEOUT_MS must be a positive decimal integer without whitespace",
+    );
+  }
+  const timeoutMs = Number(value);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs > MAX_PROVIDER_TIMEOUT_MS) {
+    throw new Error(
+      `HARNESS_MODEL_TIMEOUT_MS must be at most ${MAX_PROVIDER_TIMEOUT_MS}`,
+    );
+  }
+  return timeoutMs;
 }
 
 function postgresEnvironmentValue(env: NodeJS.ProcessEnv): string | undefined {
@@ -174,6 +194,12 @@ export function modelRegistryFromEnvironment(
   const project = providerHeaderEnvironmentValue(env, "OPENAI_PROJECT_ID");
   const modelConfigured = env.HARNESS_MODEL_ID !== undefined;
   const baseUrlConfigured = env.HARNESS_MODEL_BASE_URL !== undefined;
+  const timeoutMs = providerTimeoutEnvironmentValue(env);
+  if (timeoutMs !== undefined && (!modelConfigured || !baseUrlConfigured)) {
+    throw new Error(
+      "HARNESS_MODEL_TIMEOUT_MS requires HARNESS_MODEL_ID and HARNESS_MODEL_BASE_URL",
+    );
+  }
   if (modelConfigured || baseUrlConfigured) {
     if (!modelConfigured || !baseUrlConfigured) {
       throw new Error("HARNESS_MODEL_ID and HARNESS_MODEL_BASE_URL must be set together");
@@ -183,6 +209,7 @@ export function modelRegistryFromEnvironment(
     const options = {
       model: providerModel,
       baseUrl,
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       ...(apiKey !== undefined ? { apiKey } : {}),
       ...(organization !== undefined ? { organization } : {}),
       ...(project !== undefined ? { project } : {}),
