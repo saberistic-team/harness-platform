@@ -1,0 +1,58 @@
+id: ollama-repo-summary
+title: Summarize the repository with a local Ollama model
+
+goal: >
+  Make guarded JSON-array tool arguments from the OpenAI-compatible adapter
+  interoperable with the kernel, then exercise the real-model agent loop with
+  the local Ollama qwen3.8:27b-mlx model by inspecting this repository through
+  the policy-enforced read-only sandbox and returning exactly five concise
+  architecture bullets grounded in the files it reads.
+
+acceptance:
+  - the kernel accepts the adapter's non-enumerable undefined toJSON array guard without accepting arbitrary named or executable array properties
+  - normalized tool arguments remain plain bounded JSON after the guard is removed
+  - an offline regression test covers guarded array arguments passing through a model tool call
+  - the run uses the openai-compatible/qwen3.8:27b-mlx model through Ollama
+  - provider timeouts can be raised explicitly for large local models without changing the strict default
+  - the model inspects repository files with sandbox_exec before answering
+  - the final answer contains exactly five concise architecture bullets
+  - every architecture claim is grounded in repository content read during the run
+  - the sandbox has read-only workspace access, no writable paths, and no network access
+
+allowed_paths:
+  - README.md
+  - packages/kernel/src/run.ts
+  - packages/kernel/test/run-agent.test.ts
+  - services/agent-server/src/cli.ts
+  - services/agent-server/src/config.ts
+  - services/agent-server/test/config.test.ts
+  - tasks/ollama-repo-summary.yaml
+
+permissions:
+  fs.read: allow
+  fs.write: deny
+  process.exec:
+    "pwd": allow
+    "ls**": allow
+    "find**": allow
+    "cat**": allow
+    "head**": allow
+    "sed**": allow
+    "wc**": allow
+    "git status**": allow
+    "git log**": allow
+    "git diff**": allow
+    "pnpm test": allow
+    "pnpm typecheck": allow
+    "pnpm harness validate tasks/ollama-repo-summary.yaml": allow
+    "pnpm harness run tasks/ollama-repo-summary.yaml": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 30000
+  max_tool_calls: 30
+
+delivery:
+  type: pull_request

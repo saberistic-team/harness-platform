@@ -134,6 +134,9 @@ OpenAI-compatible provider model. Optional server-side `OPENAI_API_KEY`,
 `OPENAI_ORG_ID`, and `OPENAI_PROJECT_ID` values are treated as opaque header
 credentials: blank, padded, or unsafe values fail startup. Keys never enter ACP
 requests, manifests, events, or sandbox environments.
+`HARNESS_MODEL_TIMEOUT_MS` may raise the default 60-second provider deadline
+for large local models; it must be a positive decimal integer and is accepted
+only when both provider selectors are configured.
 
 Set `HARNESS_SANDBOX_IMAGE` to an immutable `@sha256:` image reference to add
 the built-in `sandbox_exec` tool for task-backed sessions. For a reviewed local

@@ -29,7 +29,8 @@ Defaults:
   port  $HARNESS_AGENT_PORT or 8765
 
 Provider configuration is read only from HARNESS_MODEL_ID,
-HARNESS_MODEL_BASE_URL, and server-side OPENAI_API_KEY.
+HARNESS_MODEL_BASE_URL, optional HARNESS_MODEL_TIMEOUT_MS, and server-side
+OPENAI_API_KEY.
 
 Durable sessions:
   HARNESS_DATABASE_URL (or DATABASE_URL) enables the shared Postgres session

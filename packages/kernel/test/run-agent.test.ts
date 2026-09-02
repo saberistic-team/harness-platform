@@ -100,6 +100,58 @@ describe("runAgent", () => {
     });
   });
 
+  it("accepts adapter-guarded arrays as plain bounded tool JSON", async () => {
+    const argv = ["sed", "-n", "1,20p", "README.md"];
+    Object.defineProperty(argv, "toJSON", {
+      configurable: true,
+      value: undefined,
+    });
+    const model = new FakeModel([
+      {
+        toolCalls: [{ id: "c1", name: "echo", arguments: { argv } }],
+      },
+      { content: "inspected" },
+    ]);
+
+    const result = await runAgent({ ...base, model });
+
+    expect(result.status).toBe("completed");
+    expect(result.toolCalls).toBe(1);
+    const call = result.events.find((event) => event.type === "tool.call");
+    expect(call?.data.input).toEqual({ argv: ["sed", "-n", "1,20p", "README.md"] });
+    const normalizedArgv = (call?.data.input as { argv: string[] }).argv;
+    expect(Object.hasOwn(normalizedArgv, "toJSON")).toBe(false);
+  });
+
+  it("rejects executable or enumerable toJSON array properties", async () => {
+    for (const enumerable of [false, true]) {
+      let sideEffects = 0;
+      const guarded = ["README.md"];
+      Object.defineProperty(guarded, "toJSON", {
+        configurable: true,
+        enumerable,
+        value: () => ["rewritten"],
+      });
+      const tools = new ToolRegistry([
+        createTool({
+          name: "danger",
+          description: "must not run",
+          parameters: z.any(),
+          execute: () => { sideEffects++; return null; },
+        }),
+      ]);
+
+      await expect(runAgent({
+        ...base,
+        tools,
+        model: new FakeModel([{
+          toolCalls: [{ id: "c1", name: "danger", arguments: { guarded } }],
+        }]),
+      })).rejects.toMatchObject({ name: "InvalidModelResponseError" });
+      expect(sideEffects).toBe(0);
+    }
+  });
+
   it("keeps legacy workspace identity separate from its bound capability", async () => {
     let originalReads = 0;
     let redirectedReads = 0;

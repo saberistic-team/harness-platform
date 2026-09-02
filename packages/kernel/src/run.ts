@@ -115,6 +115,8 @@ export function normalizeToolJson(input: unknown): NormalizedToolJson {
     return Object.create(null) as Record<string, unknown>;
   };
   const root = makeContainer(sourceRoot);
+  const clonedArrays: unknown[][] = [];
+  if (Array.isArray(root)) clonedArrays.push(root);
   const seen = new WeakSet<object>([sourceRoot]);
   const stack: Array<{
     source: object;
@@ -142,6 +144,18 @@ export function normalizeToolJson(input: unknown): NormalizedToolJson {
       for (const key of Reflect.ownKeys(descriptors)) {
         if (key === "length") continue;
         if (typeof key !== "string") throw new InvalidToolResultError();
+        if (key === "toJSON") {
+          const descriptor = descriptors[key];
+          if (
+            descriptor === undefined ||
+            !("value" in descriptor) ||
+            descriptor.value !== undefined ||
+            descriptor.enumerable
+          ) {
+            throw new InvalidToolResultError();
+          }
+          continue;
+        }
         const index = Number(key);
         if (
           !Number.isSafeInteger(index) ||
@@ -190,6 +204,7 @@ export function normalizeToolJson(input: unknown): NormalizedToolJson {
           if (seen.has(raw)) throw new InvalidToolResultError();
           seen.add(raw);
           cloned = makeContainer(raw);
+          if (Array.isArray(cloned)) clonedArrays.push(cloned);
           stack.push({
             source: raw,
             target: cloned as unknown[] | Record<string, unknown>,
@@ -207,9 +222,20 @@ export function normalizeToolJson(input: unknown): NormalizedToolJson {
 
   let wire: string;
   try {
+    // Guard the arrays we own while serializing so an inherited toJSON hook
+    // cannot observe or rewrite validated tool data. Remove the guards before
+    // returning the provider-neutral JSON value to the next package boundary.
+    for (const array of clonedArrays) {
+      Object.defineProperty(array, "toJSON", {
+        configurable: true,
+        value: undefined,
+      });
+    }
     wire = JSON.stringify(root);
   } catch {
     throw new InvalidToolResultError();
+  } finally {
+    for (const array of clonedArrays) Reflect.deleteProperty(array, "toJSON");
   }
   if (Buffer.byteLength(wire, "utf8") > MAX_TOOL_JSON_BYTES) {
     throw new InvalidToolResultError();
