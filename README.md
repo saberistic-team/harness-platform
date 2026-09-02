@@ -2,7 +2,8 @@
 
 A dogfooding system in which **the agent builds the harness that runs
 the agent**. Every task is a manifest, every run is an event stream, and
-every merge is gated by the harness itself.
+every task produces harness gate evidence. Pull-request CI is designed to gate
+merges when repository branch protection marks its gate job as required.
 
 One language (TypeScript / Node 22 / pnpm workspaces) until profiling
 proves otherwise.
@@ -10,7 +11,7 @@ proves otherwise.
 ## Quick start
 
 ```bash
-# Node 22+, a recent pnpm, and Pi CLI 0.84.x for bootstrap required
+# Node 22+, a recent pnpm, and a Pi CLI using JSON protocol v3 for bootstrap
 pnpm install
 pnpm test                       # vitest, all packages
 pnpm typecheck                  # tsc strict across the workspace
@@ -26,10 +27,11 @@ pnpm harness bootstrap tasks/<id>.yaml --approve-write
 `bootstrap` follows one auditable contract: canonical task path + exact
 `tasks/<id>` identity → authoritative validated manifest → TaskAgent builder →
 pre-test and post-test scope gates → structured report. Its production adapter
-targets upstream Pi 0.84.x and validates JSON protocol v3. Deterministic tests
-prove the harness composition and production streaming-adapter contract with
-an injected TaskAgent and a spawned Pi-protocol fixture. They do not execute
-the installed Pi binary or call a live model provider.
+targets upstream Pi and validates JSON protocol v3. Pi 0.84.x is the documented
+compatibility target, not an executable-version check. Deterministic tests prove
+the harness composition and production streaming-adapter contract with an
+injected TaskAgent and a spawned Pi-protocol fixture. They do not execute the
+installed Pi binary or call a live model provider.
 `--approve-write` explicitly resolves a manifest
 `fs.write: ask` decision for that attempt. The Pi adapter starts in Pi's
 offline-startup, non-interactive mode without a shell and exposes only the
@@ -80,19 +82,19 @@ branch, scope, test, failure, Git, or `run.recorded` receipt evidence.
 | `packages/models`    | Model protocol, `FakeModel`, OpenAI-compatible adapter      |
 | `packages/tools`     | Tool interface + registry                                  |
 | `packages/policy`    | Pure policy engine (decides, never acts)                   |
-| `packages/sessions`  | Append-only SQLite/Postgres session and event stores       |
-| `packages/workspace` | Path scoping (escape-safe resolution)                      |
+| `packages/sessions`  | SQLite/Postgres session stores, append-only event logs, fenced checkpoints |
+| `packages/workspace` | Lexical path-scoping seed; operational Workspace is M8+   |
 | `packages/mcp`       | MCP wire shapes + initialize-era stdio client             |
-| `packages/acp`       | Agent Client Protocol types                                |
+| `packages/acp`       | Harness ACP-shaped protocol/client; official stdio ACP is planned |
 | `packages/otel`      | Event stream → OpenTelemetry spans and metrics             |
 | `packages/sdk`       | Task manifest + normal/preflight report contracts          |
 | `apps/cli`           | Exit-gate CLI: `harness validate` \| `run` \| `bootstrap` |
 | `apps/tui`           | Session viewer + interactive ACP permission client         |
 | `apps/web`           | Read-only task board                                       |
-| `services/agent-server` | ACP JSON-RPC over WebSocket; one run per session       |
+| `services/agent-server` | `harness/acp/1` JSON-RPC over WebSocket; legacy run seam |
 | `services/control-plane` | Fenced scheduler, task state, artifacts, audit export  |
 | `services/sandbox-runner` | Hardened Docker-per-run execution boundary          |
-| `infra/kubernetes`   | Production service topology and sandbox Job contract       |
+| `infra/kubernetes`   | Fail-closed service topology and suspended sandbox Job contract |
 | `tasks/`             | Task manifests + run reports (evidence)                    |
 | `evals/`             | Golden repos + scenarios                                   |
 | `skills/`            | Agent skills for operating this platform                   |
@@ -102,7 +104,7 @@ branch, scope, test, failure, Git, or `run.recorded` receipt evidence.
 - [`AGENTS.md`](AGENTS.md) — rules of engagement (read this first)
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — the package contract
 - [`EVENTS.md`](EVENTS.md) — the event stream reference
-- [`ROADMAP.md`](ROADMAP.md) — milestones (M0–M7 complete; M8–M12 planned)
+- [`ROADMAP.md`](ROADMAP.md) — milestones (M0–M7 complete; M8–M76 planned)
 - [`SECURITY.md`](SECURITY.md) — sandbox and boundary model
 
 ## Definition of done
@@ -176,11 +178,16 @@ environment overlay; do not apply the base directly.
 
 ## Status
 
-M0–M7 are complete: foundation, operator loop, eval credibility, the
-permissioned service boundary, the durable control plane, the conditional
-polyglot review, the runtime contracts, and the deterministic minimal session
-loop. M5 found no measured reason to add a second runtime, so the platform
-remains TypeScript / Node ≥ 22. M8–M12 remain planned. See
+M0–M7 are complete: foundation, operator-loop governance, eval credibility,
+service/isolation seams, the durable control-plane domain and deployment
+contracts, the conditional language review, runtime contracts, and the
+deterministic minimal session loop. M5 found no measured reason to add a second
+runtime, so the platform remains TypeScript / Node ≥ 22. M8–M76 remain planned.
+See
 [ROADMAP](ROADMAP.md) for the milestone record and
 [ARCHITECTURE](ARCHITECTURE.md#m5-decision--retain-typescriptnode) for the
-language decision and reopening criteria.
+language decision and reopening criteria. M16 integrates the native self-host
+path offline, M17 proves its authorship attestation, M18 activates it with a
+live repository change, and every M19+ implementation milestone must then be
+authored by the latest qualified platform revision through the progressively
+ratcheted path.
