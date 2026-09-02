@@ -8,9 +8,17 @@ import {
   type Usage,
 } from "@harness/models";
 import {
+  getToolExecutionBoundary,
   ToolRegistry,
   type ToolPermissionIntent,
 } from "@harness/tools";
+import {
+  bindWorkspace,
+  restrictWorkspace,
+  WorkspaceOperationError,
+  WorkspaceOperationRequiredError,
+  type Workspace,
+} from "@harness/workspace";
 import { randomUUID } from "node:crypto";
 
 /**
@@ -285,7 +293,10 @@ export interface RunOptions {
   maxSteps?: number;
   taskId?: string;
   sessionId?: string;
+  /** Stable string identity retained in legacy session events and transports. */
   workspace?: string;
+  /** Operational capability supplied separately from the legacy identity. */
+  workspaceCapability?: Workspace;
   /**
    * Durable event sink. The kernel awaits this hook before advancing across a
    * model or tool boundary; rejection fails the run instead of leaving an
@@ -350,6 +361,9 @@ async function raceWithAbort<T>(
 }
 
 export async function runAgent(opts: RunOptions): Promise<RunResult> {
+  const workspaceCapability = opts.workspaceCapability === undefined
+    ? undefined
+    : bindWorkspace(opts.workspaceCapability);
   const at = opts.now ?? (() => new Date().toISOString());
   const newId = opts.newId ?? ((prefix: string) => `${prefix}-${randomUUID()}`);
   const events: AnyHarnessEvent[] = [];
@@ -658,9 +672,12 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
           };
         } else {
           let permitted = true;
-          if (opts.permission) {
+          const boundary = getToolExecutionBoundary(tool);
+          const requiresWorkspace = boundary?.kind === "workspace";
+          if (opts.permission || requiresWorkspace) {
             let intent: ToolPermissionIntent | undefined;
             let decision: PermissionDecision | undefined;
+            let denialCode = "TOOL_POLICY_DENIED";
             try {
               intent = tool.authorization?.(params.data) ?? {
                 action: "tool.call",
@@ -677,7 +694,26 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
               ) {
                 throw new Error("invalid tool permission intent");
               }
-              decision = opts.permission.decide(intent);
+              if (requiresWorkspace && workspaceCapability === undefined) {
+                const required = new WorkspaceOperationRequiredError(
+                  `tool ${call.name} requires an injected workspace capability`,
+                );
+                decision = {
+                  effect: "deny",
+                  reason: required.message,
+                  ruleId: "kernel.m8.workspace_required",
+                };
+                denialCode = required.code;
+              } else if (requiresWorkspace && opts.permission === undefined) {
+                decision = {
+                  effect: "deny",
+                  reason: "workspace effects require an injected permission controller",
+                  ruleId: "kernel.m8.permission_required",
+                };
+                denialCode = "TOOL_PERMISSION_REQUIRED";
+              } else if (opts.permission !== undefined) {
+                decision = opts.permission.decide(intent);
+              }
               if (
                 !decision ||
                 (decision.effect !== "allow" && decision.effect !== "ask" && decision.effect !== "deny") ||
@@ -716,7 +752,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
 
               if (decision.effect === "deny") {
                 permitted = false;
-                error = { code: "TOOL_POLICY_DENIED", message: decision.reason };
+                error = { code: denialCode, message: decision.reason };
               } else if (decision.effect === "ask" && !hasRunGrant) {
               const request: PermissionRequest = {
                 permissionId: newId("perm"),
@@ -729,7 +765,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
               };
               let resolutionPromise: Promise<PermissionResolution | "allow" | "deny">;
               try {
-                resolutionPromise = opts.permission.resolve
+                resolutionPromise = opts.permission?.resolve
                   ? opts.permission.resolve(request)
                   : Promise.resolve({ decision: "deny", note: "no permission resolver" });
               } catch {
@@ -781,9 +817,16 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
             // cross the tool side-effect boundary after journal failure.
             await cancelIfAborted();
             try {
+              const toolWorkspace = requiresWorkspace &&
+                  workspaceCapability !== undefined
+                ? restrictWorkspace(
+                    workspaceCapability,
+                    boundary.capability,
+                  )
+                : undefined;
               const rawOutput = await tool.execute(params.data, {
                 signal: opts.signal,
-                workspace: opts.workspace,
+                workspace: toolWorkspace,
                 sessionId,
                 taskId,
                 callId,
@@ -815,7 +858,9 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
                       message: "tool result is not a bounded JSON value",
                     }
                 : {
-                    code: "TOOL_EXECUTION_FAILED",
+                    code: executeError instanceof WorkspaceOperationError
+                      ? executeError.code
+                      : "TOOL_EXECUTION_FAILED",
                     message: executeError instanceof Error ? executeError.message : String(executeError),
                   };
             }

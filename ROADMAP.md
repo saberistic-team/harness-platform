@@ -143,8 +143,8 @@ and the checked-in Compose stack is not a complete control-plane integration.
 - The decision can be reopened only by a new manifest and a reproducible,
   numeric profile meeting the language-strategy criteria in `ARCHITECTURE.md`.
 
-The M6–M76 sequence below is dependency ordered. M6 and M7 are complete;
-M8–M76 remain planned. `tasks/m6-minimal-kernel-roadmap` records the earlier
+The M6–M76 sequence below is dependency ordered. M6–M8 are complete;
+M9–M76 remain planned. `tasks/m6-minimal-kernel-roadmap` records the earlier
 M6–M12 plan; `tasks/m8-platform-roadmap-decomposition` replaces only its
 unimplemented portion with the smaller milestones below. Each implementation
 milestone uses its own manifest, `tasks/<id>` branch, PR, tests, exit-gate
@@ -159,10 +159,11 @@ platform plan, not written as a greenfield wish list:
 - M6–M7 provide the deterministic `MinimalAgentRuntime`, but no CLI or service
   uses it as the production authoring path yet. M16 converges the existing
   TaskAgent exit-gate seam onto that runtime; M43 later migrates the M3 service.
-- `packages/workspace` is currently a lexical resolver, while
-  `packages/tools` contains one host `read_file`, pure fixtures, and the M3
-  `sandbox_exec` seam. M8–M11 introduce the operational Workspace family and
-  the five canonical development tools rather than relabeling those seeds.
+- Before M8, `packages/workspace` was only a lexical resolver and
+  `packages/tools` contained one host `read_file`, pure fixtures, and the M3
+  `sandbox_exec` seam. M8 established the operational Workspace contract and
+  moved `read_file` behind injection; M9–M11 add its host/container adapters
+  and the five canonical development tools rather than relabeling those seeds.
 - SQLite and Postgres already provide append-only events, stable-ID
   idempotency, checkpoint CAS, and owner fencing. M14 wires the runtime's
   `EventStore` port to them. There will not be a third authoritative JSONL
@@ -523,19 +524,24 @@ the exact event order. Cooperative adapters observe cancellation or timeout,
 the runtime performs no later pull or effect, and non-cooperative cleanup is
 bounded and classified rather than claimed to have disappeared.
 
-## M8 — Enforced workspace capability boundary (planned)
+## M8 — Enforced workspace capability boundary (complete)
 
-Introduce the operational `Workspace` filesystem/process contract in
-`packages/workspace`, adapt the M6 kernel compatibility target to it, and
-migrate the kernel and tools to that injected capability. The current lexical
-`resolvePath` seed is not treated as an operational implementation. Add an
-import/package-boundary
-rule that rejects `node:fs`, `node:fs/promises`, and `node:child_process` from
-`packages/kernel` and model-facing implementations in `packages/tools`.
+Delivered by `tasks/m8-workspace-capability-boundary`.
+
+The operational `Workspace` filesystem/process contract now lives in
+`packages/workspace`; the M6 kernel compatibility target re-exports it, and
+the kernel and tools use a snapshotted injected capability. The existing
+lexical `resolvePath` seed remains a distinct path-scope helper and is not an
+operational implementation. An offline AST import-boundary fixture rejects
+`node:fs`, `node:fs/promises`, and `node:child_process` from `packages/kernel`
+and model-facing implementations in `packages/tools`.
 Within the kernel/tool capability layer, only `packages/workspace` may adapt
 those host APIs; trusted CLI and service infrastructure retain their explicit
 outer-boundary adapters. Unknown workspace operations and unsupported
 capabilities remain typed errors.
+Because the existing Agent Server has only workspace identity metadata, it now
+rejects workspace-bound tools during session admission; M9 owns the explicit
+adapter and lifecycle wiring that makes those tools available there.
 
 **M8 gate:** a compile/lint fixture proves forbidden host imports cannot land,
 and the kernel plus tools complete their offline tests with every filesystem or
@@ -1673,8 +1679,10 @@ release, with no milestone completed by a fallback or break-glass run.
   Server, `DockerExecutor`, and Compose admission pass their isolation and
   lifecycle gates. The M4 Kubernetes base remains a non-executing topology
   until M56.
-- M8–M10 add no model-facing capability. M11–M18 expose exactly `fs.read`,
-  `fs.list`, `fs.write`, `process.exec`, and `git.diff` to the model. Later MCP,
+- M8–M10 add no model-facing tool names; M8 only routes the existing
+  `read_file` seam through the injected capability boundary. M11–M18 replace
+  the legacy seams with and expose exactly `fs.read`, `fs.list`, `fs.write`,
+  `process.exec`, and `git.diff` to the model. Later MCP,
   ACP, secret, and deployment capabilities
   are narrow adapters through the same policy and audit path; there is no
   unrestricted browser, cloud, production-machine, cluster-admin, or arbitrary

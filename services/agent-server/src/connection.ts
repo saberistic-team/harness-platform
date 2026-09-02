@@ -243,15 +243,13 @@ function snapshotHostTools(source: ToolRegistry, workspace: string): ToolRegistr
       throw unsafeTool(tool.name, "no reviewed execution boundary");
     }
     if (boundary.kind === "workspace") {
-      let boundaryRoot: string;
-      try {
-        boundaryRoot = realpathSync(resolve(boundary.root));
-      } catch {
-        throw unsafeTool(tool.name, "workspace boundary does not exist");
-      }
-      if (boundary.access !== "read" || boundaryRoot !== workspace) {
-        throw unsafeTool(tool.name, "workspace boundary does not match this session");
-      }
+      // M8 establishes injection but intentionally has no host adapter. Do not
+      // advertise a tool that this service cannot execute; M9 will provide and
+      // lifecycle-manage the explicit LocalWorkspace capability here.
+      throw unsafeTool(
+        tool.name,
+        "an operational Workspace adapter is required; agent-server wiring arrives in M9",
+      );
     } else if (boundary.kind === "sandbox") {
       let boundaryRoot: string;
       try {

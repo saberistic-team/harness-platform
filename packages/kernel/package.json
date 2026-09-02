@@ -10,6 +10,7 @@
     "@harness/events": "workspace:*",
     "@harness/models": "workspace:*",
     "@harness/tools": "workspace:*",
+    "@harness/workspace": "workspace:*",
     "zod": "^3.24.0"
   }
 }

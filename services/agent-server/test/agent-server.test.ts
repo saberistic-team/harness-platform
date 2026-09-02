@@ -12,7 +12,12 @@ import type {
   ExecuteOptions,
   ExecuteResult,
 } from "@harness/sandbox-runner";
-import { ToolRegistry, createEchoTool, createTool } from "@harness/tools";
+import {
+  ToolRegistry,
+  createEchoTool,
+  createReadFileTool,
+  createTool,
+} from "@harness/tools";
 import { z } from "zod";
 import {
   mkdirSync,
@@ -685,6 +690,47 @@ describe("AgentConnection", () => {
       expect(rejected.error.message).toContain("no reviewed execution boundary");
       expect(sideEffects).toBe(0);
       connection.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects workspace tools until an operational adapter is configured", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-agent-workspace-tool-"));
+    const sent: Array<Record<string, any>> = [];
+    let runs = 0;
+    try {
+      const connection = new AgentConnection(
+        (wire) => sent.push(JSON.parse(wire)),
+        {
+          workspaceRoot: root,
+          sessionDbPath: false,
+          models: { fake: () => new FakeModel() },
+          tools: () => new ToolRegistry([createReadFileTool(root)]),
+          run: async () => {
+            runs++;
+            throw new Error("workspace tool must fail at session admission");
+          },
+        },
+      );
+
+      connection.receive(rpc(1, "initialize", {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        clientName: "test",
+        capabilities: { streaming: true, permissioning: true },
+      }));
+      await until(() => sent.find((item) => item.id === 1));
+      connection.receive(rpc(2, "session/new", { workspace: ".", model: "fake" }));
+      const rejected = await until(() => sent.find((item) => item.id === 2));
+
+      expect(rejected.error).toMatchObject({
+        code: -32602,
+        data: { code: "ACP_INVALID_PARAMS" },
+      });
+      expect(rejected.error.message).toContain("operational Workspace adapter");
+      expect(runs).toBe(0);
+      connection.close();
+      await connection.waitForIdle();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

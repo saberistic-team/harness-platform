@@ -59,10 +59,11 @@ policy-gated multi-round tool loop remains M7 work.
 The runtime owns model invocation, message/context state, event publication,
 run cancellation and steering lifecycle, and the narrow persistence port. It
 does not own policy decisions, workspace implementations, provider credentials,
-scheduling, UI, or side-effect enforcement. The kernel-facing `Tool` and
-operational `Workspace` interfaces in `packages/kernel/src/runtime.ts` are
-compatibility targets only. A workspace is never placed directly in model
-input; reviewed bounded tools are the only future callers of its operations.
+scheduling, UI, or side-effect enforcement. M8 moved the operational
+`Workspace` contract to `@harness/workspace`; the kernel re-exports that
+canonical type instead of maintaining a second definition. A workspace is
+never placed directly in model input; reviewed bounded tools are its only
+callers.
 
 `RunInput` requires caller-known `runId`, `sessionId`, and `turnId` values plus
 an explicit model name because `ModelAdapter` intentionally has no provider
@@ -99,6 +100,38 @@ defined by the forwarded `AbortSignal`; iterator `return()` is invoked as
 best-effort cleanup and does not delay the durable cancellation result. Merely
 losing a JavaScript object cannot be observed and is not treated as a
 cancellation signal.
+
+### M8 workspace capability boundary
+
+`@harness/workspace` owns the operational filesystem/process contract and its
+typed operation dispatcher. It intentionally supplies no host implementation
+yet: `LocalWorkspace` and `DockerWorkspace` remain M9 and M10 work. The older
+`openWorkspace()` helper is retained as a lexical `WorkspacePathScope`, so a
+path resolver cannot be mistaken for an operational capability.
+
+Both kernel paths keep workspace identity separate from capability. The
+streaming runtime receives `RunInput.workspace` as an operational object; the
+legacy loop keeps `RunOptions.workspace` as string event metadata and accepts
+`RunOptions.workspaceCapability` separately. The runtime snapshots bound
+methods before execution, advertises a reviewed workspace tool only when a
+capability was injected, and still durably records tool intent and the pure
+policy decision before invoking it. Pure tools receive no workspace object;
+workspace tools receive a frozen view that delegates only their declared
+operation and rejects every other operation with a typed error. The caller
+owns workspace disposal.
+
+Model-facing tools declare a reviewed boundary and invoke only the injected
+workspace object. Production sources under `packages/kernel` and
+`packages/tools` are guarded by an offline AST fixture against direct
+filesystem or child-process imports. Tests use deterministic fake workspaces;
+host API adaptation remains confined to the workspace layer or an explicitly
+trusted outer CLI/service boundary.
+
+The M3 Agent Server still has only a string workspace identity. During M8 it
+therefore rejects workspace-bound tools at session admission instead of
+advertising an operation it cannot execute. M9 supplies the explicit local
+adapter and its lifecycle wiring; there is no implicit host-filesystem
+fallback in the interim.
 
 ## 2. Layers
 
