@@ -1,0 +1,77 @@
+id: m8-workspace-capability-boundary
+title: "Enforce the operational workspace capability boundary"
+goal: >
+  Deliver ROADMAP M8 by making packages/workspace the canonical operational
+  filesystem and process contract, injecting that capability through both
+  kernel execution paths and model-facing tools, and enforcing a source-import
+  boundary that prevents the kernel or tool implementations from reaching host
+  filesystem and process APIs directly, without implementing LocalWorkspace,
+  DockerWorkspace, or the M11 five-tool surface early.
+
+acceptance:
+  - packages/workspace exports the canonical read, write, list, argv-only
+    execute, diff, snapshot, and dispose contract used by the kernel and tools
+  - the existing lexical path-scope helper remains available but is explicitly
+    distinct from an operational Workspace implementation
+  - the M6 kernel compatibility types are adapted to and re-export the
+    packages/workspace contract instead of maintaining a duplicate definition
+  - MinimalAgentRuntime receives a snapshotted injected Workspace capability,
+    advertises reviewed workspace tools only when that capability is present,
+    and preserves durable intent and policy ordering before any workspace call
+  - legacy runAgent keeps its string workspace identity for session events and
+    service callers while accepting a separate injected operational capability
+  - Agent Server session admission rejects workspace-bound tools until M9
+    configures an operational adapter, rather than advertising an unusable tool
+  - model-facing tools perform filesystem and process work only through the
+    injected Workspace and missing or unsupported capabilities fail with typed
+    errors and no host side effect
+  - unknown or malformed workspace operations fail with typed errors before an
+    adapter method is invoked
+  - an offline import-boundary fixture rejects node:fs, node:fs/promises, and
+    node:child_process imports in packages/kernel and packages/tools production
+    sources, and the same check covers the real source tree in the default lane
+  - LocalWorkspace, DockerWorkspace, and the five canonical M11 development
+    tools are not implemented by this task
+  - ROADMAP.md, README.md, and ARCHITECTURE.md describe the delivered M8
+    boundary and continue to identify M9 as the next planned milestone
+  - pnpm test and pnpm typecheck are green offline
+
+allowed_paths:
+  - packages/workspace/**
+  - packages/tools/**
+  - packages/kernel/**
+  - services/agent-server/src/connection.ts
+  - services/agent-server/test/agent-server.test.ts
+  - pnpm-lock.yaml
+  - ARCHITECTURE.md
+  - ROADMAP.md
+  - README.md
+  - tasks/m8-workspace-capability-boundary.yaml
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test": allow
+    "pnpm typecheck": allow
+    "pnpm evals": allow
+    "pnpm install --offline": allow
+    "pnpm --filter @harness/workspace test": allow
+    "pnpm --filter @harness/tools test": allow
+    "pnpm --filter @harness/kernel test": allow
+    "pnpm harness validate tasks/m8-workspace-capability-boundary.yaml": allow
+    "pnpm harness run tasks/m8-workspace-capability-boundary.yaml": allow
+    "git status*": allow
+    "git diff*": allow
+    "git log*": allow
+    "git rev-parse*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 200
+
+delivery:
+  type: pull_request

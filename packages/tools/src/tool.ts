@@ -1,3 +1,4 @@
+import type { Workspace, WorkspaceCapability } from "@harness/workspace";
 import type { z } from "zod";
 
 export type ToolJsonValue =
@@ -17,7 +18,8 @@ export interface ToolPermissionIntent {
 /** Per-run information supplied by the kernel to cooperative tool calls. */
 export interface ToolExecutionContext {
   readonly signal?: AbortSignal;
-  readonly workspace?: string;
+  /** Operational capability; workspace identity remains outer-layer metadata. */
+  readonly workspace?: Workspace;
   readonly sessionId?: string;
   readonly taskId?: string;
   /** Correlates nested boundary events and permission asks to `tool.call`. */
@@ -32,8 +34,25 @@ export interface ToolExecutionContext {
  */
 export type ToolExecutionBoundary =
   | Readonly<{ kind: "pure" }>
-  | Readonly<{ kind: "workspace"; access: "read"; root: string }>
+  | Readonly<{
+      kind: "workspace";
+      access: "read";
+      capability: Extract<
+        WorkspaceCapability,
+        "readFile" | "listFiles" | "diff" | "snapshot"
+      >;
+      root: string;
+    }>
   | Readonly<{ kind: "sandbox"; root: string }>;
+
+export class InvalidToolExecutionBoundaryError extends Error {
+  readonly code = "TOOL_EXECUTION_BOUNDARY_INVALID";
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "InvalidToolExecutionBoundaryError";
+  }
+}
 
 export interface ToolError {
   code: string;
@@ -69,6 +88,103 @@ export function createTool<Params extends z.ZodTypeAny, Result = unknown>(
 }
 
 const executionBoundaries = new WeakMap<object, ToolExecutionBoundary>();
+const READ_ONLY_WORKSPACE_CAPABILITIES = new Set<string>([
+  "readFile",
+  "listFiles",
+  "diff",
+  "snapshot",
+]);
+
+function invalidBoundary(message: string, cause?: unknown): never {
+  throw new InvalidToolExecutionBoundaryError(
+    message,
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+function normalizeExecutionBoundary(value: unknown): ToolExecutionBoundary {
+  let record: Record<PropertyKey, unknown>;
+  let keys: readonly PropertyKey[];
+  try {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return invalidBoundary("tool execution boundary must be an object");
+    }
+    record = value as Record<PropertyKey, unknown>;
+    keys = Reflect.ownKeys(record);
+  } catch (cause) {
+    return invalidBoundary("tool execution boundary could not be inspected", cause);
+  }
+
+  const read = (key: string): unknown => {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(record, key);
+    } catch (cause) {
+      return invalidBoundary(
+        `tool execution boundary property ${key} could not be inspected`,
+        cause,
+      );
+    }
+    if (!descriptor || !("value" in descriptor)) {
+      return invalidBoundary(
+        `tool execution boundary property ${key} must be an own data property`,
+      );
+    }
+    return descriptor.value;
+  };
+  const exactKeys = (expected: readonly string[]): void => {
+    if (
+      keys.length !== expected.length ||
+      keys.some((key) => typeof key !== "string" || !expected.includes(key))
+    ) {
+      invalidBoundary("tool execution boundary contains unexpected properties");
+    }
+  };
+
+  const kind = read("kind");
+  if (kind === "pure") {
+    exactKeys(["kind"]);
+    return Object.freeze({ kind: "pure" });
+  }
+  if (kind === "workspace") {
+    exactKeys(["kind", "access", "capability", "root"]);
+    const access = read("access");
+    const capability = read("capability");
+    const root = read("root");
+    if (access !== "read") {
+      return invalidBoundary("workspace tool boundary access must be read");
+    }
+    if (
+      typeof capability !== "string" ||
+      !READ_ONLY_WORKSPACE_CAPABILITIES.has(capability)
+    ) {
+      return invalidBoundary(
+        "workspace tool boundary capability must be a reviewed read operation",
+      );
+    }
+    if (typeof root !== "string" || root.length === 0) {
+      return invalidBoundary("workspace tool boundary root must be a nonempty string");
+    }
+    return Object.freeze({
+      kind: "workspace",
+      access: "read",
+      capability: capability as Extract<
+        WorkspaceCapability,
+        "readFile" | "listFiles" | "diff" | "snapshot"
+      >,
+      root,
+    });
+  }
+  if (kind === "sandbox") {
+    exactKeys(["kind", "root"]);
+    const root = read("root");
+    if (typeof root !== "string" || root.length === 0) {
+      return invalidBoundary("sandbox tool boundary root must be a nonempty string");
+    }
+    return Object.freeze({ kind: "sandbox", root });
+  }
+  return invalidBoundary("tool execution boundary kind is unknown");
+}
 
 /**
  * Create a tool whose host-side capability has been explicitly reviewed.
@@ -80,8 +196,9 @@ export function createBoundedTool<Params extends z.ZodTypeAny, Result = unknown>
   def: Tool<Params, Result>,
   boundary: ToolExecutionBoundary,
 ): Tool<Params, Result> {
+  const normalizedBoundary = normalizeExecutionBoundary(boundary);
   const tool = Object.freeze(createTool(def));
-  executionBoundaries.set(tool, Object.freeze({ ...boundary }));
+  executionBoundaries.set(tool, normalizedBoundary);
   return tool;
 }
 

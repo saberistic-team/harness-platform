@@ -4,6 +4,7 @@ import type {
   EventStore,
   PermissionController,
   RunInput,
+  Workspace,
 } from "../src";
 import {
   EventAppendError,
@@ -28,6 +29,7 @@ import {
   type ModelRequest,
 } from "@harness/models";
 import { createBoundedTool, ToolRegistry } from "@harness/tools";
+import { WorkspaceOperationUnsupportedError } from "@harness/workspace";
 import { z } from "zod";
 
 const FIXED_AT = "2026-01-02T03:04:05.000Z";
@@ -54,6 +56,7 @@ class RecordingEventStore implements EventStore {
     private readonly options: {
       blockType?: AgentEvent["type"];
       failType?: AgentEvent["type"];
+      onAppend?: (event: AgentEvent) => void;
     } = {},
   ) {}
 
@@ -62,6 +65,7 @@ class RecordingEventStore implements EventStore {
   }
 
   async append(event: AgentEvent): Promise<void> {
+    this.options.onAppend?.(event);
     if (event.type === this.options.blockType) {
       this.appendStarted.release();
       await this.blockRelease.promise;
@@ -205,6 +209,19 @@ function makeInput(
     eventStore,
     now: () => FIXED_AT,
     newId: (prefix) => `${prefix}-${++id}`,
+    ...overrides,
+  };
+}
+
+function fakeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
+  return {
+    readFile: async () => "",
+    writeFile: async () => undefined,
+    listFiles: async () => [],
+    execute: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    diff: async () => "",
+    snapshot: async () => ({ id: "snapshot-1", createdAt: FIXED_AT }),
+    dispose: async () => undefined,
     ...overrides,
   };
 }
@@ -2124,5 +2141,348 @@ describe("M7 hardened boundary regressions", () => {
     });
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
     expectOneTerminalOutcome(store.events, "completed");
+  });
+});
+
+describe("M8 workspace capability boundary", () => {
+  it("never passes an injected workspace to a reviewed pure tool", async () => {
+    let receivedWorkspace: Workspace | undefined;
+    let writes = 0;
+    const workspace = fakeWorkspace({
+      writeFile: async () => { writes++; },
+    });
+    const tool = createBoundedTool({
+      name: "pure_probe",
+      description: "Observe the pure execution context",
+      parameters: z.object({}).strict(),
+      execute: (_input, context) => {
+        receivedWorkspace = context?.workspace;
+        return { hasWorkspace: context?.workspace !== undefined };
+      },
+    }, { kind: "pure" });
+    const model = new FakeModel([
+      { toolCalls: [{ id: "pure-probe", name: "pure_probe", arguments: {} }] },
+      { content: "done" },
+    ]);
+
+    const events = await collect(new MinimalAgentRuntime().run(makeInput(
+      model,
+      new RecordingEventStore(),
+      { workspace, tools: new ToolRegistry([tool]) },
+    )));
+
+    expect(receivedWorkspace).toBeUndefined();
+    expect(writes).toBe(0);
+    expect(events.find((event) => event.type === "tool.result")?.data)
+      .toMatchObject({ ok: true, output: { hasWorkspace: false } });
+  });
+
+  it("passes a workspace tool only its reviewed operation", async () => {
+    let writes = 0;
+    let reads = 0;
+    const workspace = fakeWorkspace({
+      readFile: async () => { reads++; return "content"; },
+      writeFile: async () => { writes++; },
+    });
+    const tool = createBoundedTool({
+      name: "read_only_probe",
+      description: "Try the granted and an ungranted workspace operation",
+      parameters: z.object({}).strict(),
+      authorization: () => ({ action: "fs.read", subject: "README.md" }),
+      execute: async (_input, context) => {
+        if (!context?.workspace) throw new Error("workspace was not injected");
+        let deniedCode = "missing";
+        try {
+          await context.workspace.writeFile("README.md", "changed");
+        } catch (error) {
+          deniedCode = (error as { code?: string }).code ?? "untyped";
+        }
+        return {
+          deniedCode,
+          content: await context.workspace.readFile("README.md"),
+        };
+      },
+    }, {
+      kind: "workspace",
+      access: "read",
+      capability: "readFile",
+      root: "/virtual/workspace",
+    });
+    const model = new FakeModel([
+      { toolCalls: [{ id: "read-only", name: "read_only_probe", arguments: {} }] },
+      { content: "done" },
+    ]);
+
+    const events = await collect(new MinimalAgentRuntime().run(makeInput(
+      model,
+      new RecordingEventStore(),
+      {
+        workspace,
+        tools: new ToolRegistry([tool]),
+        permission: {
+          decide: () => ({ effect: "allow", reason: "fixture allows read" }),
+        },
+      },
+    )));
+
+    expect(reads).toBe(1);
+    expect(writes).toBe(0);
+    expect(events.find((event) => event.type === "tool.result")?.data)
+      .toMatchObject({
+        ok: true,
+        output: {
+          deniedCode: "WORKSPACE_OPERATION_UNSUPPORTED",
+          content: "content",
+        },
+      });
+  });
+
+  it("advertises and invokes a snapshotted workspace only after durable policy", async () => {
+    const trace: string[] = [];
+    const store = new RecordingEventStore({
+      onAppend: (event) => trace.push(`event:${event.type}`),
+    });
+    let originalReads = 0;
+    let redirectedReads = 0;
+    let receivedWorkspace: Workspace | undefined;
+    const workspace = fakeWorkspace({
+      readFile: async (path) => {
+        originalReads++;
+        trace.push("workspace:readFile");
+        return `contents:${path}`;
+      },
+    });
+    const tool = createBoundedTool({
+      name: "workspace_read",
+      description: "Read through the injected workspace",
+      parameters: z.object({ path: z.string() }).strict(),
+      inputSchema: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+        additionalProperties: false,
+      },
+      authorization: (input) => ({
+        action: "fs.read",
+        subject: (input as { path: string }).path,
+        scope: "once",
+      }),
+      execute: async ({ path }, context) => {
+        receivedWorkspace = context?.workspace;
+        if (!context?.workspace) throw new Error("workspace was not injected");
+        return { content: await context.workspace.readFile(path) };
+      },
+    }, {
+      kind: "workspace",
+      access: "read",
+      capability: "readFile",
+      root: "/virtual/workspace",
+    });
+    const model = new FakeModel([
+      {
+        toolCalls: [{
+          id: "workspace-call",
+          name: "workspace_read",
+          arguments: { path: "README.md" },
+        }],
+      },
+      { content: "done" },
+    ]);
+    const stream = new MinimalAgentRuntime().run(makeInput(model, store, {
+      workspace,
+      tools: new ToolRegistry([tool]),
+      permission: {
+        decide: () => {
+          trace.push("permission:decide");
+          return { effect: "allow", reason: "fixture allows read" };
+        },
+      },
+    }));
+
+    // Admission binds every operation synchronously. Later caller mutation
+    // cannot redirect a tool to a different host capability.
+    workspace.readFile = async () => {
+      redirectedReads++;
+      return "redirected";
+    };
+    const events = await collect(stream);
+
+    expect(model.requests[0]?.tools?.map(({ name }) => name)).toEqual([
+      "workspace_read",
+    ]);
+    expect(originalReads).toBe(1);
+    expect(redirectedReads).toBe(0);
+    expect(receivedWorkspace).toBeDefined();
+    expect(receivedWorkspace).not.toBe(workspace);
+    expect(trace.indexOf("event:tool.call")).toBeLessThan(
+      trace.indexOf("event:policy.decision"),
+    );
+    expect(trace.indexOf("event:policy.decision")).toBeLessThan(
+      trace.indexOf("workspace:readFile"),
+    );
+    expect(events.find((event) => event.type === "tool.result")?.data)
+      .toMatchObject({ ok: true, output: { content: "contents:README.md" } });
+    expectOneTerminalOutcome(events, "completed");
+  });
+
+  it("does not advertise or execute a workspace tool without a capability", async () => {
+    let executions = 0;
+    let policyCalls = 0;
+    const tool = createBoundedTool({
+      name: "workspace_read",
+      description: "Requires a workspace",
+      parameters: z.object({ path: z.string() }).strict(),
+      authorization: () => ({ action: "fs.read", subject: "README.md" }),
+      execute: () => {
+        executions++;
+        return "must not run";
+      },
+    }, {
+      kind: "workspace",
+      access: "read",
+      capability: "readFile",
+      root: "/virtual/workspace",
+    });
+    const model = new FakeModel([
+      {
+        toolCalls: [{
+          id: "missing-workspace-call",
+          name: "workspace_read",
+          arguments: { path: "README.md" },
+        }],
+      },
+      { content: "recovered" },
+    ]);
+
+    const events = await collect(new MinimalAgentRuntime().run(makeInput(
+      model,
+      new RecordingEventStore(),
+      {
+        tools: new ToolRegistry([tool]),
+        permission: {
+          decide: () => {
+            policyCalls++;
+            return { effect: "allow", reason: "must not override capability" };
+          },
+        },
+      },
+    )));
+
+    expect(model.requests[0]?.tools).toBeUndefined();
+    expect(executions).toBe(0);
+    expect(policyCalls).toBe(0);
+    expect(events.find((event) => event.type === "policy.decision")?.data)
+      .toMatchObject({ effect: "deny", ruleId: "runtime.m8.workspace_required" });
+    expect(events.find((event) => event.type === "tool.result")?.data)
+      .toMatchObject({
+        ok: false,
+        error: { code: "WORKSPACE_OPERATION_REQUIRED" },
+      });
+    expectOneTerminalOutcome(events, "completed");
+  });
+
+  it("requires policy for workspace effects even when a capability is present", async () => {
+    let reads = 0;
+    const workspace = fakeWorkspace({
+      readFile: async () => {
+        reads++;
+        return "must not read";
+      },
+    });
+    const tool = createBoundedTool({
+      name: "workspace_read",
+      description: "Requires explicit policy",
+      parameters: z.object({ path: z.string() }).strict(),
+      authorization: () => ({ action: "fs.read", subject: "README.md" }),
+      execute: async ({ path }, context) => context?.workspace?.readFile(path),
+    }, {
+      kind: "workspace",
+      access: "read",
+      capability: "readFile",
+      root: "/virtual/workspace",
+    });
+    const model = new FakeModel([
+      {
+        toolCalls: [{
+          id: "missing-policy-call",
+          name: "workspace_read",
+          arguments: { path: "README.md" },
+        }],
+      },
+      { content: "recovered" },
+    ]);
+
+    const events = await collect(new MinimalAgentRuntime().run(makeInput(
+      model,
+      new RecordingEventStore(),
+      { workspace, tools: new ToolRegistry([tool]) },
+    )));
+
+    expect(model.requests[0]?.tools?.map(({ name }) => name)).toEqual([
+      "workspace_read",
+    ]);
+    expect(reads).toBe(0);
+    expect(events.find((event) => event.type === "policy.decision")?.data)
+      .toMatchObject({
+        effect: "deny",
+        ruleId: "runtime.m8.permission_required",
+      });
+    expect(events.find((event) => event.type === "tool.result")?.data)
+      .toMatchObject({ ok: false, error: { code: "TOOL_PERMISSION_REQUIRED" } });
+  });
+
+  it("preserves trusted workspace error codes in typed tool evidence", async () => {
+    const workspace = fakeWorkspace({
+      readFile: async () => {
+        throw new WorkspaceOperationUnsupportedError(
+          "readFile",
+          "fixture does not support reads",
+        );
+      },
+    });
+    const tool = createBoundedTool({
+      name: "workspace_read",
+      description: "Propagates a workspace error",
+      parameters: z.object({ path: z.string() }).strict(),
+      authorization: () => ({ action: "fs.read", subject: "README.md" }),
+      execute: async ({ path }, context) => context?.workspace?.readFile(path),
+    }, {
+      kind: "workspace",
+      access: "read",
+      capability: "readFile",
+      root: "/virtual/workspace",
+    });
+    const model = new FakeModel([
+      {
+        toolCalls: [{
+          id: "unsupported-workspace-call",
+          name: "workspace_read",
+          arguments: { path: "README.md" },
+        }],
+      },
+      { content: "recovered" },
+    ]);
+
+    const events = await collect(new MinimalAgentRuntime().run(makeInput(
+      model,
+      new RecordingEventStore(),
+      {
+        workspace,
+        tools: new ToolRegistry([tool]),
+        permission: {
+          decide: () => ({ effect: "allow", reason: "fixture allows read" }),
+        },
+      },
+    )));
+
+    expect(events.find((event) => event.type === "tool.result")?.data)
+      .toMatchObject({
+        ok: false,
+        error: {
+          code: "WORKSPACE_OPERATION_UNSUPPORTED",
+          message: expect.stringContaining("fixture does not support reads"),
+        },
+      });
+    expectOneTerminalOutcome(events, "completed");
   });
 });

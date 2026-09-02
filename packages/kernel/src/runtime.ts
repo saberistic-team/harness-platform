@@ -5,7 +5,6 @@ import {
   MAX_MODEL_TEXT_DELTA_CHARS,
   type ChatMessage,
   type CompletionResponse,
-  type JsonValue,
   type ModelAdapter as ModelAdapterPort,
   type ModelEvent,
   type ModelRequest,
@@ -18,6 +17,13 @@ import {
   ToolRegistry,
   type ToolPermissionIntent,
 } from "@harness/tools";
+import {
+  bindWorkspace,
+  restrictWorkspace,
+  WorkspaceOperationError,
+  WorkspaceOperationRequiredError,
+  type Workspace,
+} from "@harness/workspace";
 import {
   InvalidToolResultError,
   normalizeToolJson,
@@ -38,6 +44,18 @@ export type AgentEvent = AnyHarnessEvent;
 
 /** Re-export the model port from @harness/models as part of the kernel API. */
 export type ModelAdapter = ModelAdapterPort;
+
+/**
+ * Keep the M6 compatibility surface while making @harness/workspace the one
+ * canonical owner of operational workspace contracts.
+ */
+export type {
+  CommandRequest,
+  CommandResult,
+  Workspace,
+  WorkspaceCapability,
+  WorkspaceSnapshot,
+} from "@harness/workspace";
 
 export interface ToolError {
   code: string;
@@ -81,40 +99,6 @@ export interface EventStore {
   readSession(sessionId: string): AsyncIterable<AgentEvent>;
 }
 
-export interface CommandRequest {
-  argv: readonly [string, ...string[]];
-  cwd?: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-}
-
-export interface CommandResult {
-  exitCode: number | null;
-  stdout: string;
-  stderr: string;
-  timedOut?: boolean;
-}
-
-export interface WorkspaceSnapshot {
-  id: string;
-  createdAt: string;
-  metadata?: Readonly<Record<string, JsonValue>>;
-}
-
-/**
- * Operational workspace compatibility target. The model never receives this
- * object directly; only reviewed bounded tools may invoke it.
- */
-export interface Workspace {
-  readFile(path: string): Promise<string>;
-  writeFile(path: string, contents: string): Promise<void>;
-  listFiles(path: string): Promise<string[]>;
-  execute(command: CommandRequest): Promise<CommandResult>;
-  diff(): Promise<string>;
-  snapshot(): Promise<WorkspaceSnapshot>;
-  dispose(): Promise<void>;
-}
-
 export interface RuntimeBudget {
   /** Maximum model-request rounds in one turn. Defaults to eight. */
   maxSteps?: number;
@@ -134,7 +118,7 @@ export interface RunInput {
   model: string;
   modelAdapter: ModelAdapter;
   eventStore: EventStore;
-  /** Only registered pure tools are executable in M7. */
+  /** Only reviewed pure or injected-workspace tools are executable. */
   tools?: ToolRegistry;
   /** Pure policy decision plus optional interactive ask resolver. */
   permission?: PermissionController;
@@ -142,7 +126,8 @@ export interface RunInput {
   /** Per-model-round wall-clock deadline. Defaults to 60 seconds. */
   modelTimeoutMs?: number;
   taskId?: string;
-  workspace?: string;
+  /** Operational capability; never placed directly in model context. */
+  workspace?: Workspace;
   /** Prior replayed context; the input message is appended by the runtime. */
   context?: readonly ChatMessage[];
   system?: string;
@@ -470,12 +455,6 @@ function assertRunInput(input: RunInput): void {
     throw new InvalidRunInputError("permission must provide decide and an optional resolve");
   }
   if (input.taskId !== undefined) assertId(input.taskId, "taskId");
-  if (
-    input.workspace !== undefined &&
-    (typeof input.workspace !== "string" || input.workspace.length === 0)
-  ) {
-    throw new InvalidRunInputError("workspace must be a nonempty string");
-  }
   if (input.system !== undefined && typeof input.system !== "string") {
     throw new InvalidRunInputError("system must be a string");
   }
@@ -566,6 +545,9 @@ function snapshotRunInput(input: RunInput): RunInput {
   const modelAdapter = input.modelAdapter;
   const eventStore = input.eventStore;
   const tools = new ToolRegistry(input.tools?.list() ?? []);
+  const workspace = input.workspace === undefined
+    ? undefined
+    : bindWorkspace(input.workspace);
   const permission = input.permission === undefined
     ? undefined
     : {
@@ -591,7 +573,7 @@ function snapshotRunInput(input: RunInput): RunInput {
     budget: input.budget === undefined ? undefined : { ...input.budget },
     modelTimeoutMs: input.modelTimeoutMs,
     taskId: input.taskId,
-    workspace: input.workspace,
+    workspace,
     context,
     system: input.system,
     maxTokens: input.maxTokens,
@@ -711,13 +693,18 @@ function normalizeImmutableToolJson(
   };
 }
 
-function snapshotPureToolDefinitions(
+function snapshotToolDefinitions(
   tools: ToolRegistry | undefined,
+  hasWorkspace: boolean,
 ): readonly ToolDefinition[] {
   try {
     return Object.freeze((tools ?? new ToolRegistry())
       .list()
-      .filter((tool) => getToolExecutionBoundary(tool)?.kind === "pure")
+      .filter((tool) => {
+        const boundary = getToolExecutionBoundary(tool);
+        return boundary?.kind === "pure" ||
+          (hasWorkspace && boundary?.kind === "workspace");
+      })
       .map((tool) => {
         assertId(tool.name, "tool name");
         if (typeof tool.description !== "string") {
@@ -742,7 +729,7 @@ function snapshotPureToolDefinitions(
   } catch (cause) {
     if (cause instanceof InvalidRunInputError) throw cause;
     throw new InvalidRunInputError(
-      "pure tool definitions must contain bounded ordinary JSON",
+      "advertised tool definitions must contain bounded ordinary JSON",
       { cause },
     );
   }
@@ -1133,7 +1120,10 @@ export class MinimalAgentRuntime implements AgentRuntime {
   run(input: RunInput): AsyncIterable<AgentEvent> {
     const snapshot = snapshotRunInput(input);
     if (this.runs.has(snapshot.runId)) throw new RunAlreadyExistsError(snapshot.runId);
-    const toolDefinitions = snapshotPureToolDefinitions(snapshot.tools);
+    const toolDefinitions = snapshotToolDefinitions(
+      snapshot.tools,
+      snapshot.workspace !== undefined,
+    );
 
     const state: RuntimeRunState = {
       kind: "live",
@@ -1751,7 +1741,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
     }
   }
 
-  private pureToolDefinitions(state: RuntimeRunState): ToolDefinition[] {
+  private availableToolDefinitions(state: RuntimeRunState): ToolDefinition[] {
     return [...state.toolDefinitions];
   }
 
@@ -1805,7 +1795,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
 
     const requestId = this.newId(state, "req");
     const outputMessageId = this.newId(state, "msg");
-    const toolDefinitions = this.pureToolDefinitions(state);
+    const toolDefinitions = this.availableToolDefinitions(state);
     let requestContext!: ReturnType<typeof buildModelContext>;
     let requestEvent!: AgentEvent;
 
@@ -2235,6 +2225,8 @@ export class MinimalAgentRuntime implements AgentRuntime {
       return;
     }
 
+    const boundary = getToolExecutionBoundary(tool);
+
     const defaultIntent: ToolPermissionIntent = {
       action: "tool.call",
       subject: call.name,
@@ -2259,11 +2251,28 @@ export class MinimalAgentRuntime implements AgentRuntime {
     }
 
     if (decision === undefined) {
-      if (getToolExecutionBoundary(tool)?.kind !== "pure") {
+      if (boundary?.kind === "workspace" && state.input.workspace === undefined) {
+        const required = new WorkspaceOperationRequiredError(
+          `tool ${call.name} requires an injected workspace capability`,
+        );
         decision = {
           effect: "deny",
-          reason: "M7 permits only reviewed pure tools",
-          ruleId: "runtime.m7.pure_only",
+          reason: required.message,
+          ruleId: "runtime.m8.workspace_required",
+        };
+        denialCode = required.code;
+      } else if (boundary?.kind === "workspace" && !state.input.permission) {
+        decision = {
+          effect: "deny",
+          reason: "workspace effects require an injected permission controller",
+          ruleId: "runtime.m8.permission_required",
+        };
+        denialCode = "TOOL_PERMISSION_REQUIRED";
+      } else if (boundary?.kind !== "pure" && boundary?.kind !== "workspace") {
+        decision = {
+          effect: "deny",
+          reason: "runtime permits only reviewed pure or injected workspace tools",
+          ruleId: "runtime.m8.reviewed_boundaries_only",
         };
         denialCode = "TOOL_NOT_PURE";
       } else if (!state.input.permission) {
@@ -2415,9 +2424,16 @@ export class MinimalAgentRuntime implements AgentRuntime {
     try {
       let execution: Promise<unknown>;
       try {
+        const toolWorkspace = boundary?.kind === "workspace" &&
+            state.input.workspace !== undefined
+          ? restrictWorkspace(
+              state.input.workspace,
+              boundary.capability,
+            )
+          : undefined;
         execution = Promise.resolve(tool.execute(validatedInput, {
           signal: state.controller.signal,
-          workspace: state.input.workspace,
+          workspace: toolWorkspace,
           sessionId: state.input.sessionId,
           taskId: state.input.taskId,
           callId: runtimeCallId,
@@ -2444,7 +2460,9 @@ export class MinimalAgentRuntime implements AgentRuntime {
       await this.publishToolObservation(state, runtimeCallId, call, {
         ok: false,
         error: {
-          code: "TOOL_EXECUTION_FAILED",
+          code: error instanceof WorkspaceOperationError
+            ? error.code
+            : "TOOL_EXECUTION_FAILED",
           message: `tool ${call.name} failed: ${message}`.slice(0, 4096),
         },
       });

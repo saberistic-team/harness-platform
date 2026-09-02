@@ -138,6 +138,9 @@ importers:
       '@harness/tools':
         specifier: workspace:*
         version: link:../tools
+      '@harness/workspace':
+        specifier: workspace:*
+        version: link:../workspace
       zod:
         specifier: ^3.24.0
         version: 3.25.76
@@ -216,6 +219,9 @@ importers:
 
   packages/tools:
     dependencies:
+      '@harness/workspace':
+        specifier: workspace:*
+        version: link:../workspace
       zod:
         specifier: ^3.24.0
         version: 3.25.76

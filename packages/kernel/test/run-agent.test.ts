@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { FakeModel } from "@harness/models";
-import { ToolRegistry, createEchoTool, createTool } from "@harness/tools";
+import {
+  ToolRegistry,
+  createBoundedTool,
+  createEchoTool,
+  createTool,
+} from "@harness/tools";
 import { z } from "zod";
-import { runAgent, BudgetExceededError, RunCanceledError } from "../src";
+import {
+  runAgent,
+  BudgetExceededError,
+  RunCanceledError,
+  type Workspace,
+} from "../src";
 
 const FIXED_AT = "2026-01-02T03:04:05.000Z";
 let idCounter = 0;
@@ -14,6 +24,19 @@ const base = {
   sessionId: "sess-fixed",
   taskId: "kernel-0001",
 };
+
+function fakeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
+  return {
+    readFile: async () => "",
+    writeFile: async () => undefined,
+    listFiles: async () => [],
+    execute: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    diff: async () => "",
+    snapshot: async () => ({ id: "snapshot-1", createdAt: FIXED_AT }),
+    dispose: async () => undefined,
+    ...overrides,
+  };
+}
 
 describe("runAgent", () => {
   it("runs a single turn to a final answer", async () => {
@@ -75,6 +98,154 @@ describe("runAgent", () => {
       role: "assistant",
       toolCalls: [{ id: "c1", name: "echo" }],
     });
+  });
+
+  it("keeps legacy workspace identity separate from its bound capability", async () => {
+    let originalReads = 0;
+    let redirectedReads = 0;
+    let receivedWorkspace: Workspace | undefined;
+    const workspaceCapability = fakeWorkspace({
+      readFile: async (path) => {
+        originalReads++;
+        return `legacy:${path}`;
+      },
+    });
+    const tools = new ToolRegistry([
+      createBoundedTool({
+        name: "workspace_read",
+        description: "Read through the legacy run's injected capability",
+        parameters: z.object({ path: z.string() }).strict(),
+        authorization: (input) => ({
+          action: "fs.read",
+          subject: (input as { path: string }).path,
+        }),
+        execute: async ({ path }, context) => {
+          receivedWorkspace = context?.workspace;
+          if (!context?.workspace) throw new Error("workspace was not injected");
+          return { content: await context.workspace.readFile(path) };
+        },
+      }, {
+        kind: "workspace",
+        access: "read",
+        capability: "readFile",
+        root: "/legacy/workspace",
+      }),
+    ]);
+    const model = new FakeModel([
+      {
+        toolCalls: [{
+          id: "legacy-workspace-call",
+          name: "workspace_read",
+          arguments: { path: "README.md" },
+        }],
+      },
+      { content: "done" },
+    ]);
+    const running = runAgent({
+      ...base,
+      model,
+      tools,
+      workspace: "/legacy/workspace",
+      workspaceCapability,
+      permission: {
+        decide: () => ({ effect: "allow", reason: "fixture allows read" }),
+      },
+    });
+
+    workspaceCapability.readFile = async () => {
+      redirectedReads++;
+      return "redirected";
+    };
+    const result = await running;
+
+    expect(result.events[0]).toMatchObject({
+      type: "session.created",
+      data: { workspace: "/legacy/workspace" },
+    });
+    expect(originalReads).toBe(1);
+    expect(redirectedReads).toBe(0);
+    expect(receivedWorkspace).toBeDefined();
+    expect(receivedWorkspace).not.toBe(workspaceCapability);
+    expect(result.events.find((event) => event.type === "tool.result")?.data)
+      .toMatchObject({ ok: true, output: { content: "legacy:README.md" } });
+  });
+
+  it("does not leak the legacy workspace capability to a pure tool", async () => {
+    let receivedWorkspace: Workspace | undefined;
+    const tools = new ToolRegistry([
+      createBoundedTool({
+        name: "pure_probe",
+        description: "Observe the pure execution context",
+        parameters: z.object({}).strict(),
+        execute: (_input, context) => {
+          receivedWorkspace = context?.workspace;
+          return { hasWorkspace: context?.workspace !== undefined };
+        },
+      }, { kind: "pure" }),
+    ]);
+    const result = await runAgent({
+      ...base,
+      tools,
+      workspaceCapability: fakeWorkspace(),
+      model: new FakeModel([
+        { toolCalls: [{ id: "pure-probe", name: "pure_probe", arguments: {} }] },
+        { content: "done" },
+      ]),
+    });
+
+    expect(receivedWorkspace).toBeUndefined();
+    expect(result.events.find((event) => event.type === "tool.result")?.data)
+      .toMatchObject({ ok: true, output: { hasWorkspace: false } });
+  });
+
+  it("denies a legacy workspace tool when no permission controller is injected", async () => {
+    let reads = 0;
+    const tools = new ToolRegistry([
+      createBoundedTool({
+        name: "workspace_read",
+        description: "Requires explicit policy",
+        parameters: z.object({ path: z.string() }).strict(),
+        authorization: (input) => ({
+          action: "fs.read",
+          subject: (input as { path: string }).path,
+        }),
+        execute: async ({ path }, context) => context?.workspace?.readFile(path),
+      }, {
+        kind: "workspace",
+        access: "read",
+        capability: "readFile",
+        root: "/legacy/workspace",
+      }),
+    ]);
+    const result = await runAgent({
+      ...base,
+      tools,
+      workspaceCapability: fakeWorkspace({
+        readFile: async () => { reads++; return "must not read"; },
+      }),
+      model: new FakeModel([
+        {
+          toolCalls: [{
+            id: "legacy-no-policy",
+            name: "workspace_read",
+            arguments: { path: "README.md" },
+          }],
+        },
+        { content: "recovered" },
+      ]),
+    });
+
+    expect(reads).toBe(0);
+    expect(result.events.find((event) => event.type === "policy.decision")?.data)
+      .toMatchObject({
+        effect: "deny",
+        ruleId: "kernel.m8.permission_required",
+      });
+    expect(result.events.find((event) => event.type === "tool.result")?.data)
+      .toMatchObject({
+        ok: false,
+        error: { code: "TOOL_PERMISSION_REQUIRED" },
+      });
   });
 
   it("reports unknown tools as typed tool failures without crashing the run", async () => {
