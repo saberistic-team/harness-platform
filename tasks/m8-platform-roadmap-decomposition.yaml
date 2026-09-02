@@ -1,0 +1,96 @@
+id: m8-platform-roadmap-decomposition
+title: "Decompose the governed self-hosting platform roadmap"
+goal: >
+  Replace the broad planned M8-M12 sequence with smaller, dependency-ordered
+  milestones that take the existing minimal kernel through isolated
+  self-hosting, enforceable policy, role-separated sessions, public APIs,
+  MCP/ACP interoperability, remote execution, controlled self-deployment, the
+  Canvas, and manifest-backed automation without rewriting completed M0-M7
+  history or duplicating capabilities already delivered in M2-M4, while making
+  the qualified platform build every successor milestone after live
+  self-hosting activates and reconciling the plan with the actual maturity of
+  the code already present.
+
+acceptance:
+  - ROADMAP.md preserves completed M0-M7 delivery history, corrects overstated
+    integration wording where the code is only a seam or deployment contract,
+    and replaces only planned work with small milestones that each define a
+    concrete scope and exit gate
+  - the workspace capability boundary, LocalWorkspace, DockerWorkspace, and
+    the five bounded development tools are separate milestones and precede
+    self-hosting
+  - the roadmap separates steering, compaction, replay, restart continuation,
+    the offline self-host runner, and the live doctor dogfood into ordered work
+  - M16 integrates the offline native runner, M17 defines verifiable
+    native-builder and generated-patch attestation, M18 activates live
+    self-hosting, and every M19-M76 implementation is authored by the latest
+    qualified platform rather than Pi, another agent,
+    direct human edits, or candidate code acting as its own trusted builder
+  - the required dogfood path progressively adopts qualified SDK, MCP, remote
+    Agent Server, control-plane, Kubernetes, staging, and release layers with no
+    silent fallback; break-glass may restore operational state or roll back but
+    cannot author platform source or complete a roadmap milestone
+  - the new canonical task manifest is the sole attested immutable pre-builder
+    control-input delta on a clean base and cannot be edited by the builder
+  - every post-M18 milestone binds builder, manifest, workspace, run/event,
+    policy, diff/artifact, scope, test, typecheck, and exit-gate evidence to its
+    delivered and accepted tree and records native MinimalAgentRuntime
+    authorship, NativeHarnessProvider after that boundary qualifies, and that
+    fallback was not used; deterministic CI does not substitute for the
+    live-model run that authored the patch
+  - tool-independent policy actions, contextual rules, approval leases,
+    execution-boundary enforcement, and role-separated sessions are explicit
+    milestones that preserve the pure policy-engine boundary
+  - versioned model/tool/profile registries, durable sessions, JSONL
+    portability, REST, WebSocket, OpenAPI, generated SDK, client cutovers, MCP,
+    ACP, remote Agent Server, Docker control plane, and Kubernetes execution
+    are dependency ordered and extend rather than silently replace M2-M4 seams
+  - SQLite and Postgres remain the authoritative event stores while JSONL is a
+    validated portability and audit format rather than a third database
+  - monetary cost uses an append-only usage ledger, pinned pricing revisions,
+    and hard budgets rather than an unversioned estimate or silent zero cost
+  - remote live-model execution uses a brokered single-run model gateway so no
+    reusable provider credential enters an untrusted runtime
+  - release milestones separately cover constrained staging operations,
+    a qualified trusted build and OCI publication boundary, prior-builder
+    immutable candidates, reproducibility semantics, Release approval, a
+    scoped production controller with versioned canary health and rollback
+    policy, the one-time M65 release-builder bootstrap, and complete provenance
+  - Kubernetes milestones distinguish Workspace transport, executor lifecycle,
+    run isolation, production node/database topology, measured warm-capacity
+    policy, and the live self-hosting activation
+  - Canvas, automation ingress, and the end-to-end self-release rehearsal come
+    only after the governed backend and use the same public API and TaskManifest
+  - each implementation milestone requires its own future manifest, branch,
+    pull request, tests, exit-gate report, explicit milestone gate, and the
+    inherited progressive self-hosting gate when applicable
+  - README.md and ROADMAP.md agree on completed and planned milestone ranges
+  - pnpm test and pnpm typecheck are green
+
+allowed_paths:
+  - README.md
+  - ROADMAP.md
+  - tasks/m8-platform-roadmap-decomposition.yaml
+
+permissions:
+  fs.read: allow
+  fs.write: ask
+  process.exec:
+    "pnpm test": allow
+    "pnpm typecheck": allow
+    "pnpm harness validate tasks/m8-platform-roadmap-decomposition.yaml": allow
+    "pnpm harness run tasks/m8-platform-roadmap-decomposition.yaml": allow
+    "git status*": allow
+    "git rev-parse*": allow
+    "git diff*": allow
+    "git log*": allow
+    "*": deny
+  network: deny
+  git.push: deny
+
+budget:
+  max_model_tokens: 60000
+  max_tool_calls: 100
+
+delivery:
+  type: pull_request
