@@ -209,6 +209,10 @@ type UnknownRecord = Record<PropertyKey, unknown>;
 type BoundMethod = (...args: never[]) => unknown;
 const MAX_WORKSPACE_ARRAY_ITEMS = 100_000;
 const composeAbortSignals = AbortSignal.any.bind(AbortSignal);
+const readNativeAbortState = Object.getOwnPropertyDescriptor(
+  AbortSignal.prototype,
+  "aborted",
+)?.get;
 
 function isRecord(value: unknown): value is UnknownRecord {
   if (typeof value !== "object" || value === null) return false;
@@ -315,8 +319,11 @@ function requireNonemptyString(
 
 function normalizeAbortSignal(value: unknown): AbortSignal {
   try {
-    // Native composition performs the runtime internal-slot/brand check and
-    // returns an unshadowed platform signal while preserving future aborts.
+    // The intrinsic getter performs the native internal-slot/brand check on
+    // every supported Node 22+ runtime. Composition then returns an
+    // unshadowed platform signal while preserving future aborts.
+    if (readNativeAbortState === undefined) throw new TypeError("missing native getter");
+    Reflect.apply(readNativeAbortState, value, []);
     return composeAbortSignals([value as AbortSignal]);
   } catch (cause) {
     throw new WorkspaceOperationMalformedError(
