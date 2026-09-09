@@ -143,8 +143,8 @@ and the checked-in Compose stack is not a complete control-plane integration.
 - The decision can be reopened only by a new manifest and a reproducible,
   numeric profile meeting the language-strategy criteria in `ARCHITECTURE.md`.
 
-The M6–M76 sequence below is dependency ordered. M6–M8 are complete;
-M9–M76 remain planned. `tasks/m6-minimal-kernel-roadmap` records the earlier
+The M6–M76 sequence below is dependency ordered. M6–M10 are complete;
+M11–M76 remain planned. `tasks/m6-minimal-kernel-roadmap` records the earlier
 M6–M12 plan; `tasks/m8-platform-roadmap-decomposition` replaces only its
 unimplemented portion with the smaller milestones below. Each implementation
 milestone uses its own manifest, `tasks/<id>` branch, PR, tests, exit-gate
@@ -540,29 +540,36 @@ those host APIs; trusted CLI and service infrastructure retain their explicit
 outer-boundary adapters. Unknown workspace operations and unsupported
 capabilities remain typed errors.
 Because the existing Agent Server has only workspace identity metadata, it now
-rejects workspace-bound tools during session admission; M9 owns the explicit
-adapter and lifecycle wiring that makes those tools available there.
+rejects workspace-bound tools during session admission. M9–M10 now provide
+adapters for explicit injection; legacy service admission remains fail-closed
+until its caller supplies an operational capability.
 
 **M8 gate:** a compile/lint fixture proves forbidden host imports cannot land,
 and the kernel plus tools complete their offline tests with every filesystem or
 process operation routed through an injected workspace.
 
-## M9 — Trusted developer `LocalWorkspace` (planned)
+## M9 — Trusted developer `LocalWorkspace` (complete)
 
-Implement `LocalWorkspace` against the M8 contract by adapting the existing
-escape-safe path resolver and argv-only process boundary. Preserve
-`allowed_paths`, link and race defenses, bounded I/O, cancellation, diff,
-snapshot, and disposal semantics even in trusted mode. Local execution is an
+Delivered by `tasks/m9-m10-workspace-adapters`.
+
+`LocalWorkspace` implements the M8 contract by adapting the existing
+escape-safe path resolver and argv-only process boundary. It enforces `allowed_paths`, bounded UTF-8 text
+I/O, checked no-follow file opens, content-addressed snapshots, applicable Git
+patches, cancellation and terminal disposal. Local process argv vectors must
+be explicitly reviewed in the adapter configuration; scope is checked again
+after execution. This is a trusted developer boundary, not OS isolation from
+hostile local programs or other processes with the same host identity. Local execution is an
 explicit developer-only selection, never an implicit production fallback.
 
 **M9 gate:** the workspace conformance suite passes against a temporary local
 repository, and malformed input, escape attempts, unsupported operations, and
 an omitted explicit-local flag fail without touching files or processes.
 
-## M10 — Disposable `DockerWorkspace` isolation (planned)
+## M10 — Disposable `DockerWorkspace` isolation (complete)
 
-Adapt the M3 sandbox runner into a kernel-facing `DockerWorkspace` rather than
-building a second container path. Each run starts from a clean clone or copied
+Delivered by `tasks/m9-m10-workspace-adapters`. `DockerWorkspace` adapts the
+M3 sandbox runner into the kernel-facing capability through its disposable
+worktree mode; there is no second container lifecycle. Each run starts from a clean clone or copied
 worktree in an immutable image, mounts no host home directory, Docker socket,
 or SSH agent, disables network by default, and applies CPU, memory, process,
 disk, output, time, and cancellation limits. A run exports only declared
@@ -578,8 +585,7 @@ Docker suite covers traversal and link attacks, host credential probes, socket
 and agent probes, network denial, resource exhaustion, cleanup, and retained
 workspace expiry.
 
-Passing this milestone makes `DockerWorkspace` the default of the new native
-Workspace selector. M16 makes that selector the native platform-development
+`createNativeWorkspace` now defaults to `DockerWorkspace`. M16 makes that selector the native platform-development
 dispatch path. `LocalWorkspace` remains an explicit developer-only mode; there
 is no automatic fallback when Docker is unavailable.
 
@@ -590,6 +596,17 @@ directory or credentials, escape its workspace, reach the network when denied,
 or survive the lifecycle boundary, while its declared patch and artifacts
 remain retrievable. This does not claim that the still-upstream-Pi TaskAgent
 dispatch has already migrated.
+
+Implementation bounds: adapters accept bounded regular UTF-8 text worktrees;
+binary files, links, special files and unsupported scope patterns fail closed.
+Docker copies a sanitized worktree without `.git` or host mounts, and carries
+validated in-memory file state between disposable command containers. Disk is
+bounded by tmpfs and memory by the cgroup; only declared artifacts and a bounded
+Git patch leave the adapter on disposal. `retain(ms)` leases bounded workspace
+state/outputs for at most one hour, with lifecycle events and automatic expiry;
+it never keeps a live container. The image must contain Node 22+ and every
+required offline development dependency. Source worktrees must be sanitized of
+credentials; known credential paths are rejected before Docker is invoked.
 
 ## M11 — Five bounded development tools (planned)
 

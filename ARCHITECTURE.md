@@ -104,8 +104,8 @@ cancellation signal.
 ### M8 workspace capability boundary
 
 `@harness/workspace` owns the operational filesystem/process contract and its
-typed operation dispatcher. It intentionally supplies no host implementation
-yet: `LocalWorkspace` and `DockerWorkspace` remain M9 and M10 work. The older
+typed operation dispatcher. M9–M10 supply `LocalWorkspace` and `DockerWorkspace`
+behind explicit native selection. The older
 `openWorkspace()` helper is retained as a lexical `WorkspacePathScope`, so a
 path resolver cannot be mistaken for an operational capability.
 
@@ -129,9 +129,10 @@ trusted outer CLI/service boundary.
 
 The M3 Agent Server still has only a string workspace identity. During M8 it
 therefore rejects workspace-bound tools at session admission instead of
-advertising an operation it cannot execute. M9 supplies the explicit local
-adapter and its lifecycle wiring; there is no implicit host-filesystem
-fallback in the interim.
+advertising an operation it cannot execute. The new native selector supplies
+Docker by default and local mode only with an explicit developer flag. Its
+capability can be injected into either kernel path; legacy service admission
+and upstream Pi TaskAgent dispatch have not migrated.
 
 ## 2. Layers
 
@@ -343,3 +344,35 @@ language preference alone remains insufficient evidence.
 - Evals (`evals/`): golden repos + scenarios assert on **events and
   reports**, never internals — so refactorings stay safe and regressions
   are about behavior, not structure.
+
+## M9–M10 operational adapters
+
+The native selector never catches Docker startup failure to invoke local code.
+`LocalWorkspace` reuses lexical scoping and the M3 argv executor with a minimal
+process environment. Reads and writes use no-follow descriptor identity checks
+(macOS O_NOFOLLOW_ANY; Linux anchored directory descriptors). Links, hard links,
+special files, cross-device traversal and unsupported input fail closed.
+Trusted commands require exact configured argv vectors, and pre/post trees
+check their write scope. Trusted local mode assumes no hostile peer with the
+same host identity; it is not the isolation boundary for untrusted commands.
+
+`DockerWorkspace` extends the M3 plan/runner via `disposableWorkspace`, which
+replaces all bind mounts with bounded tmpfs and transports a bounded text copy
+over stdin. The existing executor, ownership lease/CID proof, forced removal,
+policy decisions, and sandbox events remain authoritative. The bootstrap runs
+only a sanitized argv command environment, then returns a bounded text tree;
+the host validates all paths, sizes, response types and scope before accepting
+it as the next state. Each command gets a fresh container and all descendants
+are destroyed by the lifecycle boundary. Output limits cover the transport as
+well as command output; tmpfs, cgroup memory/CPU/PID limits, wall deadlines,
+cancellation and disabled Docker logs bound resource use.
+
+File content is the supported snapshot domain. The initial lane rejects
+binary/link/special-file inputs, omits host Git metadata, and accepts exact or
+recursive-directory scope patterns. No checkout command, Git hook, user Docker
+configuration, SSH agent or provider credential enters the sandbox. Dependencies
+belong in the reviewed immutable Node image. Only a bounded patch and declared
+artifacts are retained after disposal; an explicit lease additionally makes
+these expire within one hour and emits typed retention/expiry events. A lease
+retains bounded memory, never a live container. A caller must dispose the
+workspace in `finally`; losing a JavaScript reference is not a lifecycle signal.

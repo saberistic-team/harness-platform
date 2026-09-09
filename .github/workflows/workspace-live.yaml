@@ -1,0 +1,34 @@
+# Real Docker is deliberately excluded from the default offline test lane.
+name: workspace live isolation
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 3 * * 1"
+permissions:
+  contents: read
+concurrency:
+  group: workspace-live-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  isolation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      HARNESS_WORKSPACE_LIVE: "1"
+      HARNESS_WORKSPACE_IMAGE: node:22.23.2-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22.23.2
+      - name: Install locked test dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Fetch reviewed immutable test image
+        run: docker pull "$HARNESS_WORKSPACE_IMAGE"
+      - name: Exercise hostile fixtures and prove cleanup
+        run: pnpm test packages/workspace/test/docker-live.test.ts

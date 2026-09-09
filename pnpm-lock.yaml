@@ -226,7 +226,14 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
 
-  packages/workspace: {}
+  packages/workspace:
+    dependencies:
+      '@harness/events':
+        specifier: workspace:*
+        version: link:../events
+      '@harness/sandbox-runner':
+        specifier: workspace:*
+        version: link:../../services/sandbox-runner
 
   services/agent-server:
     dependencies:

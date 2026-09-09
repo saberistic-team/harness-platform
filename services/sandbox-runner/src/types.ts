@@ -21,6 +21,8 @@ export interface SandboxRunSpec {
   trustedLocalImage?: true;
   /** Executable followed by arguments. Empty argv is invalid. */
   argv: readonly string[];
+  /** Native Workspace lane: no host mounts; bounded copied input over stdin. */
+  disposableWorkspace?: { input: string; diskBytes: number };
 }
 
 export type PermissionResolution = Exclude<Effect, "ask">;
@@ -92,6 +94,7 @@ export interface ExecuteOptions {
   signal?: AbortSignal;
   /** Called only after the operating system reports that the child spawned. */
   onSpawn?: () => void;
+  input?: string;
 }
 
 export interface ExecuteResult {

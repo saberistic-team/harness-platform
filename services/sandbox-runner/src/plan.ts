@@ -95,6 +95,15 @@ export function validateSandboxSpec(spec: SandboxRunSpec): void {
   }
   validateSandboxRunId(spec.runId);
   validateSandboxImage(spec.image, spec.trustedLocalImage);
+  if (spec.disposableWorkspace !== undefined) {
+    const copy = spec.disposableWorkspace;
+    if (!copy || typeof copy.input !== "string" || Buffer.byteLength(copy.input) > 32 * 1024 * 1024 ||
+      Object.keys(copy).some(key => key !== "input" && key !== "diskBytes") ||
+      !Number.isSafeInteger(copy.diskBytes) || copy.diskBytes < 1024 * 1024 || copy.diskBytes > 512 * 1024 * 1024 ||
+      spec.trustedLocalImage !== undefined) {
+      throw new SandboxSpecError("invalid disposable workspace input, disk bound, or immutable image");
+    }
+  }
   if (!Array.isArray(spec.argv) || spec.argv.length === 0) {
     throw new SandboxSpecError("argv must contain an executable");
   }
@@ -250,7 +259,9 @@ function buildDockerArgs(
     dockerUser: string;
   },
 ): string[] {
-  const mounts = plan.workspaceMounted
+  const mounts = spec.disposableWorkspace !== undefined
+    ? ["--interactive", "--tmpfs", `/workspace:rw,nosuid,nodev,size=${spec.disposableWorkspace.diskBytes},uid=65534,gid=65534,mode=0700`]
+    : plan.workspaceMounted
     ? [
         "--mount",
         bindMount(plan.workspaceRoot, CONTAINER_WORKSPACE, "readonly-recursive"),
@@ -271,6 +282,8 @@ function buildDockerArgs(
     `harness.run-id=${spec.runId}`,
     "--init",
     "--no-healthcheck",
+    "--ulimit",
+    "core=0",
     "--read-only",
     "--network",
     plan.networkMode,
@@ -284,12 +297,16 @@ function buildDockerArgs(
     PIDS_LIMIT,
     "--memory",
     MEMORY_LIMIT,
+    "--memory-swap",
+    MEMORY_LIMIT,
+    "--log-driver",
+    "none",
     "--cpus",
     CPU_LIMIT,
     "--tmpfs",
     TMPFS,
     "--workdir",
-    plan.workspaceMounted ? CONTAINER_WORKSPACE : "/tmp",
+    plan.workspaceMounted || spec.disposableWorkspace ? CONTAINER_WORKSPACE : "/tmp",
     ...EMPTY_PROXY_VARIABLES.flatMap((name) => ["--env", `${name}=`]),
     ...mounts,
     "--entrypoint",
@@ -311,13 +328,19 @@ export async function createSandboxPlan(
   validateSandboxSpec(spec);
   throwIfAborted(options.signal);
   const workspaceRoot = canonicalWorkspaceRoot(spec.workspaceRoot);
-  const owner = workspaceOwner(workspaceRoot);
-  const allowedPathMounts = planWritableMounts(
+  const owner = spec.disposableWorkspace ? { dockerUser: "65534:65534" } : workspaceOwner(workspaceRoot);
+  const allowedPathMounts = spec.disposableWorkspace ? [] : planWritableMounts(
     workspaceRoot,
     spec.manifest.allowed_paths,
   );
   const rules = compileRules(asPermissionMap(spec.manifest));
   const permissions = asPermissionMap(spec.manifest);
+  if (spec.disposableWorkspace && (permissions["fs.read"] !== "allow" || permissions["fs.write"] !== "allow" || permissions.network !== "deny")) {
+    throw new SandboxUnrepresentablePolicyError(
+      "disposableWorkspace", permissions,
+      "the copied-worktree lane requires explicit read/write allow and network deny; it cannot widen denied or unresolved permissions",
+    );
+  }
   const commandSubject = argvToPolicySubject(spec.argv);
 
   const processExec = await enforce(
