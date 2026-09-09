@@ -60,6 +60,7 @@ Rules:
 | `policy.decision`| policy engine rules on an action        | `taskId?`, `sessionId?`, `runId?`, `turnId?`, `callId?`, `action`, `effect`, `reason` |
 | `permission.requested` | an `ask` pauses before a side effect | `permissionId`, `sessionId`, `runId?`, `turnId?`, `action`, `scope` |
 | `permission.resolved` | a pending ask receives an allow/deny resolution | `permissionId`, `sessionId`, `runId?`, `turnId?`, `decision`, `scope` |
+| `workspace.lifecycle` | native workspace opens, snapshots, disposes, retains or expires | `workspaceId`, `backend`, `phase`, `snapshotId?`, `expiresAt?` |
 | `sandbox.started` | a completed Docker run proves an owned container existed | `runId`, `containerName`, `image`, `network`, `mounts` |
 | `sandbox.stopped` | execution ends and owned-container cleanup is verified | `runId`, `containerName`, `status`, `exitCode?`, `durationMs` |
 | `run.recorded`   | a run report is atomically committed    | `runId`, `taskId`, `status`, `reportPath` |
@@ -312,3 +313,14 @@ check passed, and its event timestamp is therefore an audit-confirmation time,
 not the container's exact start time. `sandbox.stopped` follows only after
 cleanup removes that owned container or verifies it is already absent. Cleanup
 failure emits a typed `error` event and deliberately omits `sandbox.stopped`.
+
+### Native workspace lifecycle (M9–M10)
+
+`workspace.lifecycle` is emitted by the adapter after opening, when producing a
+content-addressed snapshot, when disposing, and when granting or expiring an
+explicit retention lease. `backend` is `local` or `docker`. Retention leases
+carry `expiresAt` and are limited to one hour. The retained object is bounded
+workspace state/output, never a running container. Docker command lifecycles
+continue to emit M3 `sandbox.started` and `sandbox.stopped`; ownership or cleanup
+failure remains a typed error. Callers connect `onEvent` to their audit sink.
+No file contents, argv values or credentials are placed in lifecycle events.

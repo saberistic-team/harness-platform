@@ -46,6 +46,7 @@ function samples(): Array<{ type: EventType; event: AnyHarnessEvent }> {
     { type: "permission.requested", event: createEvent("permission.requested", { permissionId: "perm-1", sessionId: "sess-1", runId: "run-1", turnId: "turn-1", callId: "call-1", action: "process.exec", subject: "pnpm install", scope: "once", reason: "operator approval required" }, opts) },
     { type: "permission.resolved", event: createEvent("permission.resolved", { permissionId: "perm-1", sessionId: "sess-1", runId: "run-1", turnId: "turn-1", callId: "call-1", action: "process.exec", subject: "pnpm install", scope: "once", decision: "deny", note: "operator denied" }, opts) },
     { type: "sandbox.started", event: createEvent("sandbox.started", { runId: "run-1", containerName: "ctr-1", image: "harness-sandbox:local", network: "none", mounts: 2 }, opts) },
+    { type: "workspace.lifecycle", event: createEvent("workspace.lifecycle", { workspaceId: "ws-1", backend: "docker", phase: "retained", expiresAt: "2026-01-02T03:05:05.000Z" }, opts) },
     { type: "sandbox.stopped", event: createEvent("sandbox.stopped", { runId: "run-1", containerName: "ctr-1", status: "completed", exitCode: 0, durationMs: 12 }, opts) },
     { type: "run.recorded", event: createEvent("run.recorded", { runId: "run-1", taskId: "kernel-0001", status: "passed", reportPath: "tasks/runs/report.json" }, opts) },
     { type: "run.scheduled", event: createEvent("run.scheduled", { runId: "run-1", taskId: "kernel-0001", attempt: 1, manifestDigest: "sha256:manifest" }, opts) },

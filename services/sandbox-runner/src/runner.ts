@@ -341,6 +341,7 @@ export async function runSandbox(
           phase: "client_started",
         });
       },
+      input: spec.disposableWorkspace?.input,
     };
 
     try {

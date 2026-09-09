@@ -83,8 +83,8 @@ export interface WorkspaceSnapshot {
  * The operational filesystem/process capability injected into the runtime.
  *
  * This interface deliberately contains no host root, implementation selector,
- * or provider-facing operation names. Local and Docker implementations arrive
- * in later milestones. Model-facing code reaches these methods only through a
+ * or provider-facing operation names. Native adapters are selected only at
+ * the trusted outer boundary. Model-facing code reaches these methods only through a
  * bounded tool and `invokeWorkspaceOperation`.
  */
 export interface Workspace {
@@ -876,3 +876,9 @@ export async function invokeWorkspaceOperation(
     }
   }
 }
+
+export { parseOperationRequest as parseWorkspaceOperation };
+export * from "./adapter-common";
+export * from "./local";
+export * from "./docker";
+export * from "./selector";

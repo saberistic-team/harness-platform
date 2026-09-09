@@ -395,6 +395,17 @@ export const permissionResolved = envelope(
   }),
 );
 
+export const workspaceLifecycle = envelope(
+  "workspace.lifecycle",
+  z.object({
+    workspaceId: id,
+    backend: z.enum(["local", "docker"]),
+    phase: z.enum(["opened", "snapshot", "disposed", "retained", "expired"]),
+    snapshotId: id.optional(),
+    expiresAt: iso.optional(),
+  }),
+);
+
 export const sandboxStarted = envelope(
   "sandbox.started",
   z.object({
@@ -597,6 +608,7 @@ export const eventSchemas = {
   "permission.requested": permissionRequested,
   "permission.resolved": permissionResolved,
   "sandbox.started": sandboxStarted,
+  "workspace.lifecycle": workspaceLifecycle,
   "sandbox.stopped": sandboxStopped,
   "run.recorded": runRecorded,
   "run.scheduled": runScheduled,

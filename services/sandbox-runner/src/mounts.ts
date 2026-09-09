@@ -420,7 +420,7 @@ export function revalidateSandboxPlan(spec: SandboxRunSpec, plan: SandboxPlan): 
     ) {
       throw new SandboxPathChangedError("workspace identity changed after sandbox planning");
     }
-    const current = planWritableMounts(canonical, spec.manifest.allowed_paths);
+    const current = spec.disposableWorkspace ? [] : planWritableMounts(canonical, spec.manifest.allowed_paths);
     if (!sameMounts(plan.allowedPathMounts, current)) {
       throw new SandboxPathChangedError(
         "allowed_paths contents or identity changed after sandbox planning",

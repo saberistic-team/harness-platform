@@ -108,6 +108,8 @@ export class NodeCommandExecutor implements CommandExecutor {
       typeof executable !== "string" ||
       executable.length === 0 ||
       executable.includes("\u0000") ||
+      !Array.isArray(args) || args.some(arg => typeof arg !== "string" || arg.includes("\u0000")) ||
+      (options.input !== undefined && (typeof options.input !== "string" || Buffer.byteLength(options.input) > 32 * 1024 * 1024)) ||
       !Number.isFinite(options.timeoutMs) ||
       options.timeoutMs <= 0 ||
       options.timeoutMs > 2_147_483_647 ||
@@ -130,7 +132,8 @@ export class NodeCommandExecutor implements CommandExecutor {
           cwd: options.cwd,
           env: options.environment,
           shell: false,
-          stdio: ["ignore", "pipe", "pipe"],
+          stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+          detached: process.platform !== "win32",
         });
       } catch (cause) {
         reject(new SandboxExecutorError(`failed to spawn ${executable}`, cause));
@@ -143,11 +146,19 @@ export class NodeCommandExecutor implements CommandExecutor {
       let timedOut = false;
       let aborted = false;
       let settled = false;
+      const killGroup = () => {
+        try {
+          if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+          else child.kill("SIGKILL");
+        } catch { /* Already exited. */ }
+      };
+      child.stdin?.on("error", () => { /* Early exit closes stdin. */ });
+      child.stdin?.end(options.input);
 
       const terminateForAbort = () => {
         if (settled || aborted || timedOut) return;
         aborted = true;
-        child.kill("SIGKILL");
+        killGroup();
       };
       options.signal?.addEventListener("abort", terminateForAbort, { once: true });
       if (options.signal?.aborted) terminateForAbort();
@@ -155,7 +166,7 @@ export class NodeCommandExecutor implements CommandExecutor {
       const timer = setTimeout(() => {
         if (settled || aborted) return;
         timedOut = true;
-        child.kill("SIGKILL");
+        killGroup();
       }, options.timeoutMs);
       timer.unref();
 
@@ -171,10 +182,10 @@ export class NodeCommandExecutor implements CommandExecutor {
           // Audit callbacks cannot replace the child-process outcome.
         }
       });
-      child.stdout.on("data", (chunk: Buffer | string) => {
+      child.stdout!.on("data", (chunk: Buffer | string) => {
         appendBounded(stdout, Buffer.from(chunk), state, options.maxOutputBytes);
       });
-      child.stderr.on("data", (chunk: Buffer | string) => {
+      child.stderr!.on("data", (chunk: Buffer | string) => {
         appendBounded(stderr, Buffer.from(chunk), state, options.maxOutputBytes);
       });
       child.once("error", (cause) => {
@@ -190,6 +201,7 @@ export class NodeCommandExecutor implements CommandExecutor {
         );
       });
       child.once("close", (code, signal) => {
+        killGroup();
         if (settled) return;
         settled = true;
         finish();

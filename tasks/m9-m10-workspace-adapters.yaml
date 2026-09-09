@@ -1,0 +1,42 @@
+id: m9-m10-workspace-adapters
+title: Trusted local and disposable Docker Workspace adapters
+goal: >
+  Deliver M9 and M10 against the M8 operational contract, reusing the M3
+  executor and container lifecycle while keeping upstream Pi dispatch unchanged.
+acceptance:
+  - LocalWorkspace requires explicit developer selection and enforces scoped bounded operations
+  - Shared conformance checks cover temporary repositories, validation, links, cancellation and disposal
+  - DockerWorkspace reuses sandbox-runner with immutable images, credential-free copied inputs and bounded tmpfs
+  - Native selection defaults to Docker and fails closed when unavailable
+  - Container execution exports only scoped bounded changes and declared artifacts and proves cleanup
+  - Retained output snapshots expire within a bounded audited lifetime
+  - Offline injected-executor tests and a scheduled manual Docker isolation lane cover hostile fixtures
+  - pnpm test, pnpm typecheck and harness run pass
+allowed_paths:
+  - packages/workspace/**
+  - packages/events/**
+  - services/sandbox-runner/**
+  - .github/workflows/workspace-live.yaml
+  - pnpm-lock.yaml
+  - README.md
+  - ARCHITECTURE.md
+  - ROADMAP.md
+  - EVENTS.md
+  - tasks/m9-m10-workspace-adapters.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm test*": allow
+    "pnpm typecheck": allow
+    "pnpm harness*": allow
+    "pnpm install --offline*": allow
+    "git *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 300
+delivery:
+  type: pull_request

@@ -83,7 +83,7 @@ branch, scope, test, failure, Git, or `run.recorded` receipt evidence.
 | `packages/tools`     | Tool interface + registry                                  |
 | `packages/policy`    | Pure policy engine (decides, never acts)                   |
 | `packages/sessions`  | SQLite/Postgres session stores, append-only event logs, fenced checkpoints |
-| `packages/workspace` | Canonical operational contract plus the legacy lexical path-scope helper; adapters begin in M9 |
+| `packages/workspace` | Operational contract, explicit trusted LocalWorkspace, and default disposable DockerWorkspace |
 | `packages/mcp`       | MCP wire shapes + initialize-era stdio client             |
 | `packages/acp`       | Harness ACP-shaped protocol/client; official stdio ACP is planned |
 | `packages/otel`      | Event stream → OpenTelemetry spans and metrics             |
@@ -104,7 +104,7 @@ branch, scope, test, failure, Git, or `run.recorded` receipt evidence.
 - [`AGENTS.md`](AGENTS.md) — rules of engagement (read this first)
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — the package contract
 - [`EVENTS.md`](EVENTS.md) — the event stream reference
-- [`ROADMAP.md`](ROADMAP.md) — milestones (M0–M8 complete; M9–M76 planned)
+- [`ROADMAP.md`](ROADMAP.md) — milestones (M0–M10 complete; M11–M76 planned)
 - [`SECURITY.md`](SECURITY.md) — sandbox and boundary model
 
 ## Definition of done
@@ -181,12 +181,12 @@ environment overlay; do not apply the base directly.
 
 ## Status
 
-M0–M8 are complete: foundation, operator-loop governance, eval credibility,
+M0–M10 are complete: foundation, operator-loop governance, eval credibility,
 service/isolation seams, the durable control-plane domain and deployment
 contracts, the conditional language review, runtime contracts, and the
 deterministic minimal session loop, followed by the enforced operational
-workspace capability boundary. M5 found no measured reason to add a second
-runtime, so the platform remains TypeScript / Node ≥ 22. M9–M76 remain planned.
+workspace capability boundary and local/disposable Docker adapters. M5 found no measured reason to add a second
+runtime, so the platform remains TypeScript / Node ≥ 22. M11–M76 remain planned.
 See
 [ROADMAP](ROADMAP.md) for the milestone record and
 [ARCHITECTURE](ARCHITECTURE.md#m5-decision--retain-typescriptnode) for the
@@ -195,3 +195,31 @@ path offline, M17 proves its authorship attestation, M18 activates it with a
 live repository change, and every M19+ implementation milestone must then be
 authored by the latest qualified platform revision through the progressively
 ratcheted path.
+
+### Native Workspace selection (M9–M10)
+
+`createNativeWorkspace({ root, allowedPaths, image })` selects Docker by default.
+The image must be a reviewed credential-free Node 22+ image pinned by digest
+with all required tools installed. A missing daemon or image is an error.
+Local mode requires both `backend: "local"` and `developerOnly: true`, plus
+exact reviewed `commands` argv vectors for process execution. The adapter
+supports bounded regular UTF-8 text worktrees and rejects links, special files,
+unsupported patterns and oversized input. `allowedPaths` accepts exact paths,
+`directory/**`, or `**`; task run evidence stays reserved.
+
+Every Docker command uses the M3 runner and a fresh bounded tmpfs copy, with no
+host mounts or inherited credentials. The caller can retrieve `exportOutputs()`
+from a DockerWorkspace after disposal: a bounded Git patch and only declared
+`artifacts`. Explicit `retain(ms)` leases expire within one hour and emit
+`workspace.lifecycle` events. No running container is retained. Git metadata,
+binary files and executable-mode changes are outside this initial text-copy
+lane; provision tools/dependencies in the immutable image. Local `writeFile`
+requires an existing parent directory. These are capability adapters for native
+injection; upstream Pi TaskAgent dispatch and legacy service admission have not
+migrated (native platform-development dispatch arrives in M16).
+
+The offline tests use an injected executor. Run the real isolation suite with
+`HARNESS_WORKSPACE_LIVE=1 HARNESS_WORKSPACE_IMAGE=<immutable-image> pnpm test packages/workspace/test/docker-live.test.ts`.
+The scheduled/manual `workspace-live.yaml` workflow uses a pinned official Node
+image and checks hostile paths/links, host probes, network denial, resource
+exhaustion, cancellation, cleanup and retained-output expiry.
