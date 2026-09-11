@@ -377,3 +377,15 @@ source identity and generated scope checks. Native runtime and workspace
 lifecycle logs are separate signed-digest artifacts. The complete v2 report is
 sealed after tests and generated-tree verification. Candidate/accepted tree
 verification is read-only and returns `native-acceptance/v1` evidence.
+
+### Repeated denied calls
+
+The native runtime records each `tool.call`, `policy.decision` and denied
+`tool.result` normally. Three consecutive identical denied calls then emit the
+existing `error` and `turn.completed` failure events with code
+`RUNTIME_REPEATED_DENIAL`. No denied tool executes. Different arguments or an
+intervening tool attempt reset the streak; model call IDs and JSON object key
+order do not. The optional `runtime.checkpoint.payload.deniedCallStreak` stores
+only a SHA-256 fingerprint and count, so safe continuation preserves this bound.
+Legacy checkpoints without the field start with no streak. This guard is a
+terminal failure, not permission escalation or an automatic retry.

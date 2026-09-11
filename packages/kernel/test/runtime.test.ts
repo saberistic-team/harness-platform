@@ -2526,3 +2526,42 @@ it("M12 acknowledges an already-appending steer before cancellation and rejects 
   expectOneTerminalOutcome(store.events,"canceled");
   await iterator.return!();
 });
+
+it('stops identical denied calls despite new IDs and reordered JSON keys', async () => {
+  let executions = 0;
+  const tools = new ToolRegistry([createBoundedTool({
+    name: 'denied', description: 'denied fixture', parameters: z.record(z.unknown()),
+    inputSchema: { type: 'object' }, execute: () => { executions++; return {}; },
+  }, { kind: 'pure' })]);
+  const model = new FakeModel([
+    { toolCalls: [{ id: 'a', name: 'denied', arguments: { x: 1, y: { a: 2, b: 3 } } }] },
+    { toolCalls: [{ id: 'b', name: 'denied', arguments: { y: { b: 3, a: 2 }, x: 1 } }] },
+    { toolCalls: [{ id: 'c', name: 'denied', arguments: { x: 1, y: { a: 2, b: 3 } } }] },
+    { content: 'must not be requested' },
+  ]);
+  const outcome = await collectOutcome(new MinimalAgentRuntime().run(makeInput(model, new RecordingEventStore(), {
+    tools, permission: { decide: () => ({ effect: 'deny', reason: 'fixture' }) },
+  })));
+  expect(outcome.error).toMatchObject({ code: 'RUNTIME_REPEATED_DENIAL' });
+  expect(model.requests).toHaveLength(3);
+  expect(executions).toBe(0);
+  expect(outcome.events.filter(e => e.type === 'tool.result')).toHaveLength(3);
+  expect(outcome.events.find(e => e.type === 'error')?.data).toMatchObject({ code: 'RUNTIME_REPEATED_DENIAL' });
+  expectOneTerminalOutcome(outcome.events, 'failed');
+});
+
+it('allows recovery from denial and resets the streak on a different attempt', async () => {
+  let executions = 0;
+  const tools = new ToolRegistry([createBoundedTool({
+    name: 'choice', description: 'fixture', parameters: z.object({ value: z.number() }),
+    inputSchema: { type: 'object' }, authorization: input => ({ action: 'choose', subject: String((input as { value: number }).value) }),
+    execute: () => { executions++; return {}; },
+  }, { kind: 'pure' })]);
+  const values = [1, 1, 2, 1, 1, 0, 1, 1];
+  const model = new FakeModel([...values.map((value, i) => ({ toolCalls: [{ id: `c${i}`, name: 'choice', arguments: { value } }] })), { content: 'done' }]);
+  const events = await collect(new MinimalAgentRuntime().run(makeInput(model, new RecordingEventStore(), {
+    tools, budget: { maxSteps: 16 }, permission: { decide: intent => ({ effect: intent.subject === '0' ? 'allow' : 'deny', reason: 'fixture' }) },
+  })));
+  expect(executions).toBe(1);
+  expectOneTerminalOutcome(events, 'completed');
+});

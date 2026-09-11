@@ -1,0 +1,26 @@
+id: m17-denied-call-guard
+title: Stop repeated denied native tool calls before budget exhaustion
+goal: Enforce a restart-safe three-call bound on consecutive identical policy denials with typed event evidence and no tool execution.
+acceptance:
+  - Three identical denied calls terminate with RUNTIME_REPEATED_DENIAL and no fourth model request
+  - Different calls reset the streak while reordered object keys and fresh call IDs do not evade it
+  - Safe continuation preserves the denial streak without repeating uncertain work
+  - Existing policy decisions remain pure and denied tools never execute
+  - Offline tests, strict typecheck and exit gate pass
+allowed_paths:
+  - packages/kernel/src/runtime.ts
+  - packages/kernel/src/checkpoint.ts
+  - packages/kernel/test/runtime.test.ts
+  - packages/kernel/test/continuation.test.ts
+  - EVENTS.md
+  - tasks/m17-denied-call-guard.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+delivery:
+  type: pull_request
