@@ -144,7 +144,7 @@ and the checked-in Compose stack is not a complete control-plane integration.
   numeric profile meeting the language-strategy criteria in `ARCHITECTURE.md`.
 
 The M6–M76 sequence below is dependency ordered. M6–M10 are complete;
-M11–M14 implementations are recorded below; M11 qualification remains pending.
+M11–M14 implementations and their gates are recorded below.
 M15–M76 remain planned. `tasks/m6-minimal-kernel-roadmap` records the earlier
 M6–M12 plan; `tasks/m8-platform-roadmap-decomposition` replaces only its
 unimplemented portion with the smaller milestones below. Each implementation
@@ -609,12 +609,15 @@ it never keeps a live container. The image must contain Node 22+ and every
 required offline development dependency. Source worktrees must be sanitized of
 credentials; known credential paths are rejected before Docker is invoked.
 
-## M11 — Five bounded development tools (implemented; qualification pending)
+## M11 — Five bounded development tools (implemented)
 
-Implementation: `tasks/m11-development-tools`. Offline FakeModel edit/test/diff
-and provider-alias fixtures pass. The inherited developer-only LocalWorkspace
-trust restriction still applies; hostile concurrent host writers are not an
-OS-isolated security boundary. Docker remains the isolated execution path.
+Delivered by `tasks/m11-development-tools`. Model-driven `fs.write` and
+`process.exec` require an attested isolated `DockerWorkspace`; local or spoofed
+capabilities fail before effects with `WORKSPACE_ISOLATION_REQUIRED`.
+Read-only local inspection remains supported. Attestation survives trusted
+binding/restriction but is revoked when methods are replaced. The FakeModel
+edit/test/diff gate uses the isolated copied tree; local symlink, hard-link and
+parent-substitution fixtures prove mutation is refused without touching victims.
 
 Expose exactly these model capabilities through the persisted-policy tool
 loop:

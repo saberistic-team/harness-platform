@@ -21,7 +21,7 @@ it("M14 SQLite reopen replays stable IDs and recreates exact requests and a foll
     await store.createSession({ sessionId: "s", metadata: { ownerId: "owner", leaseExpiresAt: "2026-01-02T00:00:00Z" } });
     const adapter = new SessionEventStore(store, "s", "owner");
     const workspace = new LocalWorkspace({ root, developerOnly: true, allowedPaths: ["x"] });
-    const model = new FakeModel([{ toolCalls: [{ id: "write", name: "fs.write", arguments: { path: "x", contents: "new" } }] }, { content: "done" }]);
+    const model = new FakeModel([{ toolCalls: [{ id: "read", name: "fs.read", arguments: { path: "x" } }] }, { content: "done" }]);
     const input = { runId: "r", sessionId: "s", turnId: "t", input: "edit", model: "fake", modelAdapter: model, eventStore: adapter, workspace, tools: createDevelopmentTools(root), permission: { decide: () => ({ effect: "allow" as const, reason: "fixture" }) }, system: "Keep constraints", providerOptions: { temperature: 0 }, maxTokens: 100, budget: { maxModelTokens: 10000 } };
     const emitted = await collect(new MinimalAgentRuntime().run(input));
     const modelCheckpoints = emitted.filter(e => e.type === "runtime.checkpoint" && e.data.payload.phase === "model");
@@ -53,7 +53,7 @@ it("M14 SQLite reopen replays stable IDs and recreates exact requests and a foll
     expect(follow.requests[0]!.system).toBe("Keep constraints");
     expect(follow.requests[0]!.providerOptions).toEqual({temperature:0});
     expect(follow.requests[0]!.messages.slice(-2)).toEqual([{ role: "assistant", content: "done" }, { role: "user", content: "follow" }]);
-    expect(follow.requests[0]!.messages.some(m => m.role === "assistant" && m.toolCalls?.[0]?.id === "write")).toBe(true);
+    expect(follow.requests[0]!.messages.some(m => m.role === "assistant" && m.toolCalls?.[0]?.id === "read")).toBe(true);
     await store.setMetadata("s", { ownerId: "new-owner", leaseExpiresAt: "2026-01-02T00:00:00Z" }, { ownerId: "owner" });
     await expect(reopened.append(before[0]!)).rejects.toMatchObject({ code: "SESS_OWNERSHIP_LOST" });
     await expect(store.saveCheckpoint("s", { expectedRevision: checkpoint!.revision, afterSeq: checkpoint!.afterSeq, payload: checkpoint!.payload, ownerId: "owner" })).rejects.toMatchObject({ code: "SESS_OWNERSHIP_LOST" });

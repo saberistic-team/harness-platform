@@ -350,3 +350,9 @@ rewind the current cursor. A failed CAS stops the runtime before model execution
 loads committed terminal history for a new follow-up; uncertain model/tool work
 is never silently repeated. Live Postgres remains outside the default lane;
 its transaction and ordering contracts use injected deterministic fixtures.
+
+M11 native model mutations (`fs.write`, `process.exec`) require the attested
+isolated Workspace. Local or forged workspaces fail before effects and persist
+`tool.result.error.code = WORKSPACE_ISOLATION_REQUIRED`. This removes the host
+path-check/rename race from the model capability surface; trusted developer
+LocalWorkspace APIs are not promoted into model mutation authority.
