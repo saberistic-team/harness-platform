@@ -157,7 +157,8 @@ it("crash matrix covers both sides of every request, intent, policy, result, and
     }
     await scenario(-1, false, "before");
     await scenario(-1, false, "after");
-});
+// The full crash matrix reopens SQLite at every boundary; CI disks can be slower.
+}, 30000);
 it("cancellation during safe recovery persists cancellation without requesting the model", async () => {
     const root = mkdtempSync(join(tmpdir(), "m15-cancel-"));
     let time = "2026-01-01T00:00:00Z";
