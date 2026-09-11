@@ -15,6 +15,8 @@ export interface NativeAgentOptions {
     image: string;
     model?: string;
     modelAdapter?: ModelAdapter;
+    /** Per-request kernel deadline; omission retains the kernel default. */
+    modelTimeoutMs?: number;
     /** Deterministic container protocol seam, never a local workspace fallback. */
     executor?: DockerWorkspaceOptions["executor"];
     /** Exercise a deliberate process loss at the first safe boundary. */
@@ -54,8 +56,10 @@ export function createNativeTaskAgent(options: NativeAgentOptions): TaskAgent {
             let store = openSqliteStore(database, { now: () => new Date(clock).toISOString() });
             let workspace: DockerWorkspace | undefined;
             try {
-                if (Object.keys(config).some(key => !["image", "model", "modelAdapter", "executor", "restartAtSafeBoundary"].includes(key)))
+                if (Object.keys(config).some(key => !["image", "model", "modelAdapter", "modelTimeoutMs", "executor", "restartAtSafeBoundary"].includes(key)))
                     throw new NativeBuilderError("NATIVE_CONFIG_INVALID", "unknown native builder option");
+                if (config.modelTimeoutMs !== undefined && (!Number.isSafeInteger(config.modelTimeoutMs) || config.modelTimeoutMs <= 0 || config.modelTimeoutMs > 2_147_483_647))
+                    throw new NativeBuilderError("NATIVE_CONFIG_INVALID", "modelTimeoutMs must be an integer between 1 and 2147483647");
                 if (typeof config.image !== "string" || !/@sha256:[a-f0-9]{64}$/u.test(config.image))
                     throw new NativeBuilderError("NATIVE_IMAGE_REQUIRED", "native execution requires a pinned image digest");
                 const source = join(directory, "source");
@@ -92,6 +96,7 @@ export function createNativeTaskAgent(options: NativeAgentOptions): TaskAgent {
                 const modelAdapter = config.modelAdapter ?? new FakeModel([{ content: "No edits requested by the offline model." }]);
                 const deadline = AbortSignal.timeout(input.timeoutMs);
                 const runInput = { runId, sessionId, turnId, input: input.prompt, model, modelAdapter, eventStore: adapter as EventStore,
+                    ...(config.modelTimeoutMs === undefined ? {} : { modelTimeoutMs: config.modelTimeoutMs }),
                     taskId: input.manifest.id, workspace, tools: createDevelopmentTools(source), signal: deadline,
                     budget: { maxSteps: 128, ...(input.budget?.max_model_tokens !== undefined ? { maxModelTokens: input.budget.max_model_tokens } : {}), ...(input.budget?.max_tool_calls !== undefined ? { maxToolCalls: input.budget.max_tool_calls } : {}) },
                     permission: { decide: (intent: {
