@@ -10,7 +10,7 @@ import type { TaskManifest } from "@harness/sdk";
 import { createBoundedTool, type Tool } from "@harness/tools";
 import { z } from "zod";
 
-export const SANDBOX_EXEC_TOOL = "sandbox_exec";
+export const SANDBOX_EXEC_TOOL = "process.exec";
 
 export interface AgentSandboxOptions {
   image: string;

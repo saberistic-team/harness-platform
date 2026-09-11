@@ -608,7 +608,12 @@ it never keeps a live container. The image must contain Node 22+ and every
 required offline development dependency. Source worktrees must be sanitized of
 credentials; known credential paths are rejected before Docker is invoked.
 
-## M11 — Five bounded development tools (planned)
+## M11 — Five bounded development tools (implemented; qualification pending)
+
+Implementation: `tasks/m11-development-tools`. Offline FakeModel edit/test/diff
+and provider-alias fixtures pass. The inherited developer-only LocalWorkspace
+trust restriction still applies; hostile concurrent host writers are not an
+OS-isolated security boundary. Docker remains the isolated execution path.
 
 Expose exactly these model capabilities through the persisted-policy tool
 loop:

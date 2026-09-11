@@ -44,7 +44,7 @@ function workspaceBoundaryRoot(workspaceRoot: string): string {
   if (typeof workspaceRoot !== "string" || workspaceRoot.length === 0) {
     throw new WorkspaceFileAccessError(
       "TOOL_WORKSPACE_INVALID_ROOT",
-      "read_file requires workspace boundary metadata",
+      "fs.read requires workspace boundary metadata",
     );
   }
   return workspaceRoot;
@@ -56,10 +56,11 @@ async function readWorkspaceFile(
 ): Promise<ReadFileResult> {
   if (context?.workspace === undefined) {
     throw new WorkspaceOperationRequiredError(
-      "read_file requires an injected workspace capability",
+      "fs.read requires an injected workspace capability",
     );
   }
 
+  context.signal?.throwIfAborted();
   const content = await invokeWorkspaceOperation(context.workspace, {
     operation: "readFile",
     path,
@@ -67,7 +68,7 @@ async function readWorkspaceFile(
   if (typeof content !== "string") {
     throw new WorkspaceFileAccessError(
       "TOOL_WORKSPACE_READ_FAILED",
-      "read_file workspace returned non-text content",
+      "fs.read workspace returned non-text content",
     );
   }
 
@@ -75,7 +76,7 @@ async function readWorkspaceFile(
   if (size > READ_FILE_MAX_BYTES) {
     throw new WorkspaceFileAccessError(
       "TOOL_WORKSPACE_TOO_LARGE",
-      `read_file is limited to ${READ_FILE_MAX_BYTES} bytes`,
+      `fs.read is limited to ${READ_FILE_MAX_BYTES} bytes`,
     );
   }
 
@@ -90,9 +91,9 @@ async function readWorkspaceFile(
 export function createReadFileTool(workspaceRoot: string): Tool {
   const root = workspaceBoundaryRoot(workspaceRoot);
   return createBoundedTool({
-    name: "read_file",
+    name: "fs.read",
     description: "Read a UTF-8 text file from the workspace.",
-    parameters: z.object({ path: z.string().min(1) }),
+    parameters: z.object({ path: z.string().min(1).max(4096) }).strict(),
     inputSchema: {
       type: "object",
       properties: { path: { type: "string", minLength: 1 } },

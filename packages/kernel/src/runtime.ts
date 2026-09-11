@@ -21,6 +21,7 @@ import {
   bindWorkspace,
   restrictWorkspace,
   WorkspaceOperationError,
+  WorkspaceAdapterError,
   WorkspaceOperationRequiredError,
   type Workspace,
 } from "@harness/workspace";
@@ -2460,7 +2461,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
       await this.publishToolObservation(state, runtimeCallId, call, {
         ok: false,
         error: {
-          code: error instanceof WorkspaceOperationError
+          code: error instanceof WorkspaceOperationError || error instanceof WorkspaceAdapterError
             ? error.code
             : "TOOL_EXECUTION_FAILED",
           message: `tool ${call.name} failed: ${message}`.slice(0, 4096),

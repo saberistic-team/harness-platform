@@ -44,7 +44,7 @@ Remote transport:
   service exposes ws:// only. Use a trusted hop behind a TLS reverse proxy.
 
 Sandbox configuration:
-  HARNESS_SANDBOX_IMAGE enables sandbox_exec. Optional settings are
+  HARNESS_SANDBOX_IMAGE enables process.exec. Optional settings are
   HARNESS_SANDBOX_TRUST_LOCAL_IMAGE=true|false, HARNESS_DOCKER_HOST, and
   HARNESS_DOCKER_BINARY. Any sandbox setting requires HARNESS_SANDBOX_IMAGE.`;
 
