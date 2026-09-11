@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error Reviewed standalone image helper has no TypeScript declaration.
-import { checkArguments } from '../../../infra/docker/native-check.mjs';
+import { checkArguments, runCheck } from '../../../infra/docker/native-check.mjs';
 
 describe('native focused test command', () => {
   it('builds a fixed argv with one scoped test target', () => {
@@ -67,6 +67,45 @@ it.skipIf(!process.env.HARNESS_NATIVE_TEST_IMAGE)('returns failing then correcte
     const passed = await check();
     expect(passed.exitCode, passed.stdout + passed.stderr).toBe(0);
     expect((await workspace.snapshot()).id).toBe(edited);
+    expect(passed.stdout).toContain('NATIVE_CHECK_STAGE: typecheck');
+    await workspace.writeFile(target, source(2) + 'const wrong: string = 123;\n');
+    const beforeCompilerFailure = (await workspace.snapshot()).id;
+    const compilerFailure = await check();
+    expect(compilerFailure.exitCode).not.toBe(0);
+    expect(compilerFailure.stdout + compilerFailure.stderr).toContain('TS2322');
+    expect((await workspace.snapshot()).id).toBe(beforeCompilerFailure);
     expect((await check('apps/cli/test/missing.test.ts')).exitCode).not.toBe(0);
   } finally { await workspace?.dispose(); rmSync(root, { recursive: true, force: true }); }
 }, 90000);
+
+
+it('returns compiler failures after passing tests within a shared deadline', () => {
+  const calls: {argv: string[]; options: {timeout: number}}[] = [];
+  let clock = 0;
+  let output = '';
+  const status = runCheck(['apps/cli/test/doctor.test.ts'], {
+    now: () => clock, out: (text: string) => { output += text; }, err: (text: string) => { output += text; },
+    spawn: (_program: string, argv: string[], options: {timeout: number}) => {
+      calls.push({argv, options}); clock += 10000;
+      return { status: calls.length === 1 ? 0 : 2, stdout: calls.length === 1 ? 'tests passed' : 'TS2322: wrong type', stderr: '' };
+    },
+  });
+  expect(status).toBe(2);
+  expect(calls.map(call => call.options.timeout)).toEqual([25000, 15000]);
+  expect(calls[1]!.argv).toContain('--noEmit');
+  expect(output).toContain('NATIVE_CHECK_STAGE: typecheck');
+  expect(output).toContain('TS2322');
+});
+
+it('does not start the compiler after failed tests or exhausted time', () => {
+  for (const testStatus of [1, 0]) {
+    let count = 0;
+    let clock = 0;
+    const status = runCheck(['apps/cli/test/doctor.test.ts'], {
+      now: () => clock, out: () => {}, err: () => {},
+      spawn: () => { count++; clock = 25000; return { status: testStatus, stdout: '', stderr: '' }; },
+    });
+    expect(status).not.toBe(0);
+    expect(count).toBe(1);
+  }
+});

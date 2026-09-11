@@ -1,0 +1,26 @@
+{
+  "fs.read": {
+    "AGENTS.md": "allow",
+    "README.md": "allow",
+    "apps/cli/src/main.ts": "allow",
+    "apps/cli/src/doctor.ts": "allow",
+    "apps/cli/test/doctor.test.ts": "allow",
+    "apps/cli/package.json": "allow",
+    "packages/kernel/package.json": "allow",
+    "packages/sessions/src/sqlite.ts": "allow",
+    "packages/sdk/src/task-manifest.ts": "allow",
+    "packages/tools/src/development.ts": "allow",
+    "tasks/m18-live-doctor.yaml": "allow",
+    "*": "deny"
+  },
+  "fs.list": "deny",
+  "fs.write": "allow",
+  "git.diff": "deny",
+  "process.exec": {
+    "node /opt/harness/native-check.mjs apps/cli/test/doctor.test.ts": "allow",
+    "pnpm test": "allow",
+    "*": "deny"
+  },
+  "network": "deny",
+  "git.push": "deny"
+}

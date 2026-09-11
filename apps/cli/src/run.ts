@@ -1203,7 +1203,7 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
     }
 
     const unsupportedBuilderActions = (["fs.read", "fs.write"] as const)
-      .filter((action) => typeof manifest.permissions[action] === "object");
+      .filter((action) => typeof manifest.permissions[action] === "object" && !(native && action === "fs.read"));
     if (unsupportedBuilderActions.length > 0) {
       const message =
         "bootstrap requires flat fs.read/fs.write effects; subject rules need a path-scoped tool adapter";
@@ -1227,24 +1227,30 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
       });
     }
 
-    const readDecision = rules.decide("fs.read");
-    pushPolicy(
-      readDecision.action,
-      readDecision.effect,
-      readDecision.reason,
-      manifest.id,
-      readDecision.subject,
-    );
-    if (readDecision.effect !== "allow") {
-      return finishRun({
-        status: "blocked",
-        preTest: initialSnapshot,
-        failure: {
-          stage: "policy",
-          code: "BUILDER_READ_NOT_ALLOWED",
-          message: `builder fs.read decision is ${readDecision.effect}`,
-        },
-      });
+    if (native && typeof manifest.permissions["fs.read"] === "object") {
+      // Native tools derive a path intent after argument validation; the kernel
+      // authorizes each read before invoking the workspace. Legacy adapters do not.
+      pushPolicy("bootstrap.path_policy", "allow", "verified native runtime enforces each fs.read path", manifest.id, "fs.read");
+    } else {
+      const readDecision = rules.decide("fs.read");
+      pushPolicy(
+        readDecision.action,
+        readDecision.effect,
+        readDecision.reason,
+        manifest.id,
+        readDecision.subject,
+      );
+      if (readDecision.effect !== "allow") {
+        return finishRun({
+          status: "blocked",
+          preTest: initialSnapshot,
+          failure: {
+            stage: "policy",
+            code: "BUILDER_READ_NOT_ALLOWED",
+            message: `builder fs.read decision is ${readDecision.effect}`,
+          },
+        });
+      }
     }
 
     const writeDecision = rules.decide("fs.write");

@@ -41,9 +41,9 @@ export function createDevelopmentTools(root: string): ToolRegistry {
       execute: async ({path,contents}, context) => { await invokeWorkspaceOperation(active(context, true), {operation:"writeFile", path:safePath(path), contents}); return {path}; },
     }, {kind:"workspace",access:"write",capability:"writeFile",root}),
     createBoundedTool({
-      name:"process.exec", description:"Execute a bounded argv command without a shell.",
-      parameters:z.object({ argv:z.array(z.string().max(8192).refine(s=>!s.includes("\0"))).min(1).max(128), cwd:path.optional(), timeoutMs:z.number().int().min(1).max(30000).optional() }).strict(),
-      inputSchema:object({argv:{type:"array",minItems:1,maxItems:128,items:{type:"string",maxLength:8192}},cwd:{type:"string"},timeoutMs:{type:"integer",minimum:1,maximum:30000}},["argv"]),
+      name:"process.exec", description:"Execute bounded argv without a shell. cwd is workspace-relative: omit it or use dot for the workspace root; never use /workspace.",
+      parameters:z.object({ argv:z.array(z.string().max(8192).refine(s=>!s.includes("\0"))).min(1).max(128), cwd:path.refine(value => !value.startsWith("/"), "cwd must be workspace-relative; omit cwd or use dot for the workspace root, never /workspace").optional(), timeoutMs:z.number().int().min(1).max(30000).optional() }).strict(),
+      inputSchema:object({argv:{type:"array",minItems:1,maxItems:128,items:{type:"string",maxLength:8192}},cwd:{type:"string",pattern:"^[^/]",description:"Workspace-relative directory. Omit or use . for the root. Absolute paths including /workspace are invalid."},timeoutMs:{type:"integer",minimum:1,maximum:30000}},["argv"]),
       authorization:p=>({action:"process.exec",subject:(p as {argv:string[]}).argv.map(s=>/^[a-zA-Z0-9_./:@%+=,-]+$/.test(s)?s:`'${s.replaceAll("'", `'\\''`)}'`).join(" ")}),
       execute:async ({argv,cwd,timeoutMs},context)=>bounded(await invokeWorkspaceOperation(active(context, true),{operation:"execute",command:{argv:argv as [string,...string[]],...(cwd===undefined?{}:{cwd:safePath(cwd,true)}),timeoutMs:timeoutMs??30000,...(context?.signal?{signal:context.signal}:{})}})),
     },{kind:"workspace",access:"execute",capability:"execute",root}),
