@@ -109,3 +109,16 @@ it('does not start the compiler after failed tests or exhausted time', () => {
     expect(count).toBe(1);
   }
 });
+
+import { loadTaskManifest } from '../../../packages/sdk/src/task-manifest';
+
+it('documents a valid native fixture and exposes the missing delivery failure', () => {
+  const guide = readFileSync('infra/docker/native-authoring.md', 'utf8');
+  const yaml = /```yaml\n([\s\S]*?)```/.exec(guide)?.[1];
+  expect(yaml).toBeDefined();
+  expect(loadTaskManifest(yaml!).delivery.type).toBe('none');
+  expect(() => loadTaskManifest(yaml!.replace(/delivery:\n  type: none\n/, ''))).toThrow(/delivery/);
+  const permissions = JSON.parse(readFileSync('infra/docker/m18-permissions.json', 'utf8'));
+  expect(permissions['fs.read']['infra/docker/native-authoring.md']).toBe('allow');
+  expect(permissions['fs.read']['*']).toBe('deny');
+});

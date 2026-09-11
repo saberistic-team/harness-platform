@@ -1,0 +1,23 @@
+id: m17-native-fixture-guidance
+title: Provide validated fixture and actionable native failure guidance
+goal: Prevent blind fixture rewrites by documenting a schema-validated example and error-reporting workflow accessible to M18.
+acceptance:
+  - Native authoring guidance includes a complete SDK-valid manifest fixture with required delivery
+  - Offline regression validates the documented fixture and reproduces the missing-delivery error
+  - M18 read policy permits the guide without permitting unrelated reads
+  - Full tests, strict typecheck and exit gate pass
+allowed_paths:
+  - infra/docker/native-authoring.md
+  - infra/docker/m18-permissions.json
+  - apps/cli/test/native-check.test.ts
+  - tasks/m17-native-fixture-guidance.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+delivery:
+  type: pull_request
