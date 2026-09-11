@@ -1,0 +1,32 @@
+id: m17-native-test-feedback
+title: Offline focused test feedback for native authors
+goal: Provide a dependency-equipped pinned sandbox build and a bounded focused test command so the native author can correct its own tests without network access or host dependency mounts.
+acceptance:
+  - Build context contains only declared package manifests, lockfile, and reviewed test tooling
+  - Image dependencies are installed at build time and workspace packages resolve to the live isolated source
+  - Focused checks use argv without a shell, reject missing or invalid test targets, disable persistent test caches and enforce a deadline
+  - Offline tests and a manual pinned-image smoke test demonstrate failing then corrected source feedback without changing the workspace
+  - Full tests, typecheck and the exit gate pass
+allowed_paths:
+  - infra/docker/native-test.Dockerfile
+  - infra/docker/native-check.mjs
+  - infra/docker/native-check.config.mjs
+  - infra/docker/build-native-test.mjs
+  - infra/docker/native-test.md
+  - apps/cli/test/native-check.test.ts
+  - tasks/m17-native-test-feedback.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "git *": allow
+    "node **": allow
+    "*": deny
+  network: deny
+  git.push: deny
+budget:
+  max_model_tokens: 40000
+  max_tool_calls: 100
+delivery:
+  type: pull_request
