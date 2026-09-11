@@ -85,3 +85,5 @@ export function openSession(
     log: new InMemoryEventLog(sessionId),
   };
 }
+
+export * from "./runtime-event-store";

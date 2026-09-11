@@ -534,3 +534,38 @@ describe("PostgresSessionStore with an offline query seam", () => {
     db.expectDone();
   });
 });
+
+it("M14 fences checkpoint CAS under the Postgres row lock even for identical retries",async()=>{
+ const checkpoint=sessionRow({next_seq:"1",metadata:JSON.stringify({ownerId:"new",leaseExpiresAt:"2026-01-02T00:00:00Z"}),checkpoint_revision:"1",checkpoint_seq:"0",checkpoint_payload:'{"version":1}',checkpoint_updated_at:"2026-01-01T00:00:00.000Z"});
+ const db=new ScriptedDatabase([{tag:"sessions:session-lock",rows:[checkpoint]}]);
+ await expect(storeWith(db).saveCheckpoint("sess-pg",{expectedRevision:0,afterSeq:0,payload:{version:1},ownerId:"old"})).rejects.toMatchObject({code:"SESS_OWNERSHIP_LOST"});
+ db.expectDone();
+});
+
+it("M14 Postgres EventStore preserves event identity, checkpoint CAS and ordered replay",async()=>{
+ const {SessionEventStore}=await import("../src");
+ const {reconstructModelRequest}=await import("../../kernel/src/checkpoint");
+ const payload={version:1,runId:"r",sessionId:"sess-pg",turnId:"t",phase:"model",messageState:{version:1,revision:1,messages:[{role:"user",content:"hello"}]},model:"fake",usage:{promptTokens:0,completionTokens:0,totalTokens:0},modelRequests:1,toolCalls:0,toolTranscriptBytes:0,seenModelCallIds:[],runPermissionGrants:[],warnedBudgets:[],pendingSteering:[],sessionTurns:["t"],settings:{},nextRequest:{messages:[{role:"user",content:"hello"}],model:"fake",contextVersion:1,messageRevision:1}};
+ const event=createEvent("runtime.checkpoint",{runId:"r",sessionId:"sess-pg",turnId:"t",version:1,payload},{eventId:"checkpoint-1",at:"2026-01-01T00:00:00.000Z"});
+ const metadata=JSON.stringify({ownerId:"owner",leaseExpiresAt:"2026-01-02T00:00:00Z"});
+ const initial=sessionRow({metadata}),appended=sessionRow({metadata,next_seq:"1"});
+ const saved=sessionRow({metadata,next_seq:"1",checkpoint_revision:"1",checkpoint_seq:"0",checkpoint_payload:JSON.stringify(payload),checkpoint_updated_at:"2026-01-01T01:00:00.000Z"});
+ const row=eventRow(event,0,10);
+ const db=new ScriptedDatabase([
+  {tag:"sessions:checkpoint-get",rows:[initial]},
+  {tag:"sessions:session-lock",rows:[initial]},{tag:"sessions:event-by-id",rows:[]},
+  {tag:"sessions:global-seq-allocate",rows:[{global_seq:"10"}]},{tag:"sessions:event-insert",rows:[row]},{tag:"sessions:next-seq-advance",rowCount:1},
+  {tag:"sessions:checkpoint-get",rows:[appended]},{tag:"sessions:session-lock",rows:[appended]},{tag:"sessions:checkpoint-save",rows:[saved]},
+  {tag:"sessions:session-lock",rows:[saved]},{tag:"sessions:event-by-id",rows:[row]},{tag:"sessions:checkpoint-get",rows:[saved]},
+  {tag:"sessions:session-lock",rows:[saved]},{tag:"sessions:event-by-id",rows:[row]},
+  {tag:"sessions:session-exists",rows:[{found:1}]},{tag:"sessions:event-page",rows:[row]},
+  {tag:"sessions:checkpoint-get",rows:[saved]},
+ ]);
+ const adapter=new SessionEventStore(storeWith(db),"sess-pg","owner");
+ await adapter.append(event);await adapter.append(event);
+ await expect(adapter.append({...event,at:"2026-01-01T00:01:00.000Z"})).rejects.toMatchObject({code:"SESS_EVENT_CONFLICT"});
+ const replay:AnyHarnessEvent[]=[];for await(const item of adapter.readSession("sess-pg"))replay.push(item);
+ expect(replay).toEqual([event]);
+ expect(reconstructModelRequest((await adapter.loadCheckpoint())!.payload)).toEqual(payload.nextRequest);
+ db.expectDone();
+});

@@ -1,3 +1,4 @@
+import { parseRuntimeCheckpoint, RuntimeCheckpointError, type RuntimeCheckpoint } from "./checkpoint";
 import { effectiveContext, contextOccupancy, type ContextPolicy, type CompactionState } from "./context";
 import { createEvent, type AnyHarnessEvent } from "@harness/events";
 import {
@@ -97,6 +98,9 @@ export interface Tool {
  * deduplication, checkpoint, or fencing semantics.
  */
 export interface EventStore {
+  /** Durable adapters opt into full versioned checkpoint emission. */
+  readonly checkpointVersion?: 1;
+  loadCheckpoint?(): Promise<{payload:unknown}|undefined>;
   append(event: AgentEvent): Promise<void>;
   readSession(sessionId: string): AsyncIterable<AgentEvent>;
 }
@@ -402,6 +406,7 @@ function assertRunInput(input: RunInput): void {
   ) {
     throw new InvalidRunInputError("eventStore append/readSession are required");
   }
+  if (input.eventStore.checkpointVersion !== undefined && input.eventStore.checkpointVersion !== 1) throw new InvalidRunInputError("unsupported EventStore checkpoint version");
   if (input.contextPolicy !== undefined) {
     const p = input.contextPolicy;
     if (!p || typeof p !== "object" || Object.keys(p).sort().join() !== "reserveTokens,tailMessages,thresholdTokens,windowTokens" ||
@@ -578,6 +583,7 @@ function snapshotRunInput(input: RunInput): RunInput {
       stream: modelAdapter.stream.bind(modelAdapter),
     },
     eventStore: {
+      checkpointVersion:eventStore.checkpointVersion,
       append: eventStore.append.bind(eventStore),
       readSession: eventStore.readSession.bind(eventStore),
     },
@@ -1130,7 +1136,52 @@ function equalToolJson(left: unknown, right: unknown): boolean {
  */
 export class MinimalAgentRuntime implements AgentRuntime {
   private readonly runs = new Map<string, RuntimeRunState | RunTombstone>();
-  private readonly sessions = new Map<string, { runId: string; turns: Set<string>; messages: VersionedMessageState; pending: SteeringMessage[]; compaction?: CompactionState; usage: Usage; store: EventStore }>();
+  private readonly sessions = new Map<string, { runId: string; turns: Set<string>; messages: VersionedMessageState; pending: SteeringMessage[]; compaction?: CompactionState; usage: Usage; store: EventStore; defaults: Pick<RunInput,"system"|"maxTokens"|"providerOptions"|"modelTimeoutMs"|"contextPolicy"|"budget"> }>();
+
+  /** Restore a completed durable turn for follow-up; uncertain work is never repeated. */
+  async restoreSession(eventStore: EventStore, sessionId: string): Promise<void> {
+    if(this.sessions.has(sessionId))throw new InvalidRunInputError("session already loaded");
+    const durable = await eventStore.loadCheckpoint?.();
+    if(durable)parseRuntimeCheckpoint(durable.payload);
+    let checkpoint:RuntimeCheckpoint|undefined;
+    let terminal=false;
+    for await(const event of eventStore.readSession(sessionId)) {
+      if(event.type==="runtime.checkpoint") {
+        checkpoint=parseRuntimeCheckpoint(event.data.payload);
+        if(checkpoint.sessionId!==sessionId || checkpoint.runId!==event.data.runId || checkpoint.turnId!==event.data.turnId)throw new RuntimeCheckpointError("RUNTIME_CHECKPOINT_INVALID","session mismatch");
+        terminal=false;
+      } else if(event.type==="turn.completed" && checkpoint && event.data.runId===checkpoint.runId) {
+        terminal=checkpoint.phase==="terminal" && checkpoint.terminalStatus===event.data.status;
+      } else if(event.type==="steering.queued" && checkpoint?.phase==="terminal") {
+        throw new RuntimeCheckpointError("RUNTIME_CHECKPOINT_INVALID","steering after terminal checkpoint");
+      }
+    }
+    if(!checkpoint || !terminal)throw new RuntimeCheckpointError("RUNTIME_CHECKPOINT_INTERRUPTED","no committed terminal checkpoint; replay required before follow-up");
+    this.runs.set(checkpoint.runId,{kind:"terminal",runId:checkpoint.runId,status:checkpoint.terminalStatus!});
+    this.sessions.set(sessionId,{runId:checkpoint.runId,turns:new Set(checkpoint.sessionTurns),messages:checkpoint.messageState,pending:checkpoint.pendingSteering,usage:checkpoint.usage,compaction:checkpoint.compaction,store:eventStore,defaults:{...checkpoint.settings,budget:checkpoint.budget,contextPolicy:checkpoint.contextPolicy}});
+  }
+
+  private checkpoint(state:RuntimeRunState, phase:RuntimeCheckpoint["phase"], nextRequest?:ModelRequest, terminalStatus?:TerminalTurnStatus): RuntimeCheckpoint {
+    const {signal:_signal,...request}=nextRequest??{};
+    return parseRuntimeCheckpoint({version:1,runId:state.input.runId,sessionId:state.input.sessionId,turnId:state.input.turnId,phase,
+      terminalStatus,messageState:state.messageState,model:state.input.model,usage:state.usage,
+      modelRequests:state.modelRequests,toolCalls:state.toolCalls,toolTranscriptBytes:state.toolTranscriptBytes,
+      seenModelCallIds:[...state.seenModelCallIds],runPermissionGrants:[...state.runPermissionGrants],warnedBudgets:[...state.warnedBudgets],
+      pendingSteering:state.pendingSteering,sessionTurns:[...this.sessions.get(state.input.sessionId)!.turns],
+      compaction:state.compaction,contextPolicy:state.input.contextPolicy,budget:state.input.budget,
+      settings:{system:state.input.system,maxTokens:state.input.maxTokens,providerOptions:state.input.providerOptions,modelTimeoutMs:state.input.modelTimeoutMs},
+      nextRequest:nextRequest?request:undefined});
+  }
+
+  private async persistCheckpoint(state:RuntimeRunState, phase:RuntimeCheckpoint["phase"], nextRequest?:ModelRequest, terminalStatus?:TerminalTurnStatus): Promise<void> {
+    if(state.input.eventStore.checkpointVersion!==1)return;
+    await this.serialize(state,async()=>{
+      const checkpoint=this.checkpoint(state,phase,nextRequest,terminalStatus);
+      const event=createEvent("runtime.checkpoint",{runId:state.input.runId,sessionId:state.input.sessionId,turnId:state.input.turnId,version:1,payload:checkpoint as unknown as Record<string,unknown>},this.eventOptions(state));
+      await this.appendRaw(state,event);
+      this.enqueue(state,{event});
+    });
+  }
 
   run(input: RunInput): AsyncIterable<AgentEvent> {
     if (this.runs.has(input.runId)) throw new RunAlreadyExistsError(input.runId);
@@ -1142,7 +1193,11 @@ export class MinimalAgentRuntime implements AgentRuntime {
       if (input.context !== undefined) throw new InvalidRunInputError("follow-up cannot replace prior context");
       if (input.eventStore !== prior.store) throw new InvalidRunInputError("follow-up must use the session EventStore");
     }
-    const snapshot = snapshotRunInput(prior ? { ...input, context: prior.messages.messages } : input);
+    const snapshot = snapshotRunInput(prior ? { ...input, context: prior.messages.messages,
+      system:input.system ?? prior.defaults.system, maxTokens:input.maxTokens ?? prior.defaults.maxTokens,
+      providerOptions:input.providerOptions ?? prior.defaults.providerOptions, modelTimeoutMs:input.modelTimeoutMs ?? prior.defaults.modelTimeoutMs,
+      contextPolicy:input.contextPolicy ?? prior.defaults.contextPolicy,budget:input.budget ?? prior.defaults.budget,
+    } : input);
     if (this.runs.has(snapshot.runId)) throw new RunAlreadyExistsError(snapshot.runId);
     const toolDefinitions = snapshotToolDefinitions(
       snapshot.tools,
@@ -1181,7 +1236,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
     void state.admitted.promise.catch(() => undefined);
     this.runs.set(snapshot.runId, state);
     const turns = new Set(prior?.turns ?? []); turns.add(snapshot.turnId);
-    this.sessions.set(snapshot.sessionId, {runId:snapshot.runId, turns, messages:state.messageState, pending:[], usage:state.usage, store:input.eventStore});
+    this.sessions.set(snapshot.sessionId, {runId:snapshot.runId, turns, messages:state.messageState, pending:[], usage:state.usage, store:input.eventStore,defaults:{system:snapshot.system,maxTokens:snapshot.maxTokens,providerOptions:snapshot.providerOptions,modelTimeoutMs:snapshot.modelTimeoutMs,contextPolicy:snapshot.contextPolicy,budget:snapshot.budget}});
 
     if (snapshot.signal) {
       const onAbort = () => {
@@ -1526,6 +1581,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
     note?: string,
   ): Promise<void> {
     if (state.terminalPublished) return;
+    await this.persistCheckpoint(state,"terminal",undefined,status);
     const turnEvent = createEvent("turn.completed", {
       errorCode:state.failure?.code,
       runId: state.input.runId,
@@ -1966,6 +2022,8 @@ export class MinimalAgentRuntime implements AgentRuntime {
     let sequence = 0;
     let completed: CompletionResponse | undefined;
     try {
+      this.assertMayProduce(state);
+      await this.persistCheckpoint(state,summaryContext ? "summary" : "model",request);
       this.assertMayProduce(state);
       const stream: unknown = state.input.modelAdapter.stream(request);
       observeAndRejectThenable(stream, "modelAdapter.stream");
