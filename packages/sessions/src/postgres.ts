@@ -766,6 +766,7 @@ export class PostgresSessionStore implements SessionStore {
       if (row.status !== "active") {
         throw new SessionStoreError("SESS_CLOSED", `session "${sessionId}" is ${row.status}`);
       }
+      if (options.ownerId !== undefined) assertAppendOwnership(decodeMetadata(row.metadata), options.ownerId, await this.storageTime(tx));
       const currentRevision = asSafeInteger(row.checkpoint_revision, "checkpoint revision");
       const currentCheckpoint = checkpointFromRow(row, sessionId);
       // A retry of the immediately preceding write returns the durable value

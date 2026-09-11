@@ -715,6 +715,7 @@ export class SqliteSessionStore implements SessionStore {
       if (row.status !== "active") {
         throw new SessionStoreError("SESS_CLOSED", `session "${sessionId}" is ${row.status}`);
       }
+      if (options.ownerId !== undefined) assertAppendOwnership(decodeMetadata(row.metadata), options.ownerId, this.now());
       const currentCheckpoint = checkpointFromRow(row, sessionId);
       if (
         row.checkpoint_revision === expected + 1 &&

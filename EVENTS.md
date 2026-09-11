@@ -336,6 +336,21 @@ that cannot fit fails closed with `turn.completed.errorCode` equal to
 `RUNTIME_SUMMARY_FAILED` or `RUNTIME_CONTEXT_OVERFLOW`. Usage is cumulative
 across same-session turns; occupancy is measured independently per request.
 
+
+M14 adds `runtime.checkpoint` with an independently versioned v1 payload.
+The production `SessionEventStore` opts into checkpoints at model boundaries
+(including summary requests) and terminal outcomes. Payloads retain original
+message state, exact detached next request, model identity/options, cumulative
+usage, round/tool counters, seen tool IDs, grants, pending FIFO steering,
+turn identities and compaction state. SQLite/Postgres assign cursors, preserve
+stable IDs, reject conflicting delivery and fence appends and checkpoint CAS
+under their storage lock. Redelivery of an older identical checkpoint cannot
+rewind the current cursor. A failed CAS stops the runtime before model execution.
+`reconstructModelRequest` is pure and rejects future versions. `restoreSession`
+loads committed terminal history for a new follow-up; uncertain model/tool work
+is never silently repeated. Live Postgres remains outside the default lane;
+its transaction and ordering contracts use injected deterministic fixtures.
+
 M11 native model mutations (`fs.write`, `process.exec`) require the attested
 isolated Workspace. Local or forged workspaces fail before effects and persist
 `tool.result.error.code = WORKSPACE_ISOLATION_REQUIRED`. This removes the host

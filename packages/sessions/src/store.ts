@@ -69,6 +69,8 @@ export interface SessionCheckpoint {
 }
 
 export interface SaveCheckpointOptions {
+  /** Checked under the same row lock/transaction as checkpoint CAS. */
+  ownerId?: string;
   /** Current revision observed by the caller; zero means no checkpoint yet. */
   expectedRevision: number;
   /** Must not move behind the previous revision's durable event cursor. */

@@ -1,0 +1,37 @@
+id: m14-durable-replay
+title: Durable runtime EventStore and versioned replay checkpoints
+goal: Deliver M14 production persistence adapter, fenced checkpoint CAS and exact next-request reconstruction.
+acceptance:
+  - SQLite reopen and Postgres contracts replay identical ordered sessions
+  - Stable IDs, conflicting duplicate errors, cursor order and owner fencing are preserved
+  - Versioned checkpoints reconstruct exact requests and reject future versions
+  - Full offline tests, typecheck and exit gate pass
+allowed_paths:
+  - packages/tools/**
+  - packages/models/**
+  - packages/workspace/**
+  - services/agent-server/**
+  - tasks/m11-development-tools.yaml
+  - packages/sessions/**
+  - pnpm-lock.yaml
+  - packages/kernel/**
+  - packages/events/**
+  - EVENTS.md
+  - ROADMAP.md
+  - tasks/m12-session-turns.yaml
+  - tasks/m13-context-compaction.yaml
+  - tasks/m14-durable-replay.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "git *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 500
+delivery:
+  type: pull_request

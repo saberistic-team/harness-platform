@@ -144,7 +144,8 @@ and the checked-in Compose stack is not a complete control-plane integration.
   numeric profile meeting the language-strategy criteria in `ARCHITECTURE.md`.
 
 The M6–M76 sequence below is dependency ordered. M6–M10 are complete;
-M11–M76 remain planned. `tasks/m6-minimal-kernel-roadmap` records the earlier
+M11–M14 implementations and their gates are recorded below.
+M15–M76 remain planned. `tasks/m6-minimal-kernel-roadmap` records the earlier
 M6–M12 plan; `tasks/m8-platform-roadmap-decomposition` replaces only its
 unimplemented portion with the smaller milestones below. Each implementation
 milestone uses its own manifest, `tasks/<id>` branch, PR, tests, exit-gate
@@ -673,7 +674,11 @@ outcome.
 threshold, reconstructs the expected next request from its summary and tail,
 and proves failure and overflow paths do not discard original history.
 
-## M14 — Durable replay and checkpoint invariants (planned)
+## M14 — Durable replay and checkpoint invariants (implemented)
+
+Delivered by `tasks/m14-durable-replay`; SQLite reopen and injected Postgres
+contracts verify stable replay, fenced CAS, duplicate conflicts and exact
+request reconstruction. Terminal sessions support cross-restart follow-ups.
 
 Deliver the production `EventStore`-to-`SessionStore` adapter and back the
 minimal persistence port with the existing SQLite/Postgres semantics: stable

@@ -201,6 +201,11 @@ export const steeringApplied = envelope("steering.applied", z.object({
   messageRevision: eventCount,
 }).strict());
 
+/** Full runtime checkpoint; its independently versioned payload is parsed by the kernel. */
+export const runtimeCheckpoint = envelope("runtime.checkpoint", z.object({
+  ...runtimeIdentity, version:z.literal(1), payload:z.record(z.unknown()),
+}).strict());
+
 export const contextCheckpoint = envelope("context.checkpoint", z.object({
   ...runtimeIdentity,
   version:z.literal(1), summary:messageContent.min(1),
@@ -620,6 +625,7 @@ export const eventSchemas = {
   "context.compacted": contextCompacted,
   "context.checkpoint": contextCheckpoint,
   "context.accounted": contextAccounted,
+  "runtime.checkpoint": runtimeCheckpoint,
   "turn.completed": turnCompleted,
   "model.request": modelRequest,
   "model.response": modelResponse,
