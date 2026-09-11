@@ -324,3 +324,14 @@ workspace state/output, never a running container. Docker command lifecycles
 continue to emit M3 `sandbox.started` and `sandbox.stopped`; ownership or cleanup
 failure remains a typed error. Callers connect `onEvent` to their audit sink.
 No file contents, argv values or credentials are placed in lifecycle events.
+
+
+M13 adds `context.accounted` (conservative `utf8-upper-bound/v1` occupancy,
+window and output reservation), and `context.checkpoint` (version 1 summary,
+original-history tail index/revision and immutable tail). The summary view never
+replaces original message history. `context.compacted` links the before/after
+counts. Summary requests use the ordinary model deadline, stream validation,
+usage and hard budget; they do not execute tools. A failed summary or context
+that cannot fit fails closed with `turn.completed.errorCode` equal to
+`RUNTIME_SUMMARY_FAILED` or `RUNTIME_CONTEXT_OVERFLOW`. Usage is cumulative
+across same-session turns; occupancy is measured independently per request.

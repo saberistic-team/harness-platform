@@ -653,7 +653,10 @@ terminal-run errors, and exactly one terminal outcome.
 concurrent FIFO order, resolve cancel-versus-steer races, and complete a
 follow-up without losing or rewriting prior message state.
 
-## M13 — Context accounting and compaction (planned)
+## M13 — Context accounting and compaction (implemented)
+
+Delivered by `tasks/m13-context-compaction`; occupancy, versioned summary/tail,
+summary usage, failure and overflow are covered by offline fixtures.
 
 Track context-window occupancy separately from the cumulative token budget.
 Compaction retains the append-only original history, appends a versioned summary

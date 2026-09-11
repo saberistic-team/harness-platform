@@ -1,0 +1,34 @@
+id: m13-context-compaction
+title: Context accounting and append-only compaction
+goal: Deliver M13 separate context occupancy, versioned summary checkpoints and fail-closed overflow.
+acceptance:
+  - Context occupancy is separate from cumulative charged model usage
+  - Compaction retains original history and persists versioned summary and tail
+  - Summary failure and overflow are typed and fail closed
+  - Full offline tests, typecheck and exit gate pass
+allowed_paths:
+  - packages/tools/**
+  - packages/models/**
+  - packages/workspace/**
+  - services/agent-server/**
+  - tasks/m11-development-tools.yaml
+  - packages/kernel/**
+  - packages/events/**
+  - EVENTS.md
+  - ROADMAP.md
+  - tasks/m12-session-turns.yaml
+  - tasks/m13-context-compaction.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "git *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 500
+delivery:
+  type: pull_request

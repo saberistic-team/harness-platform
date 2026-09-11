@@ -201,6 +201,18 @@ export const steeringApplied = envelope("steering.applied", z.object({
   messageRevision: eventCount,
 }).strict());
 
+export const contextCheckpoint = envelope("context.checkpoint", z.object({
+  ...runtimeIdentity,
+  version:z.literal(1), summary:messageContent.min(1),
+  tailStart:eventCount, throughRevision:eventCount,
+  tail:z.array(z.unknown()).max(10000),
+}).strict());
+export const contextAccounted = envelope("context.accounted", z.object({
+  ...runtimeIdentity, requestId:id, occupancyTokens:eventCount,
+  windowTokens:positiveEventCount, reserveTokens:eventCount,
+  algorithm:z.literal("utf8-upper-bound/v1"), summaryRequest:z.boolean(),
+}).strict());
+
 /** A compacted context snapshot that is sufficient for durable replay. */
 export const contextCompacted = envelope(
   "context.compacted",
@@ -246,6 +258,7 @@ export const turnCompleted = envelope(
   "turn.completed",
   z.object({
     ...runtimeIdentity,
+    errorCode: z.string().min(1).max(128).optional(),
     status: z.enum(["completed", "failed", "canceled", "budget_exceeded"]),
     outputMessageId: id.optional(),
     modelRequests: eventCount,
@@ -605,6 +618,8 @@ export const eventSchemas = {
   "steering.queued": steeringQueued,
   "steering.applied": steeringApplied,
   "context.compacted": contextCompacted,
+  "context.checkpoint": contextCheckpoint,
+  "context.accounted": contextAccounted,
   "turn.completed": turnCompleted,
   "model.request": modelRequest,
   "model.response": modelResponse,

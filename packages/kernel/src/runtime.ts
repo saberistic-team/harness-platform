@@ -1,3 +1,4 @@
+import { effectiveContext, contextOccupancy, type ContextPolicy, type CompactionState } from "./context";
 import { createEvent, type AnyHarnessEvent } from "@harness/events";
 import {
   addUsage,
@@ -131,6 +132,7 @@ export interface RunInput {
   workspace?: Workspace;
   /** Prior replayed context; the input message is appended by the runtime. */
   context?: readonly ChatMessage[];
+  contextPolicy?: ContextPolicy;
   system?: string;
   maxTokens?: number;
   providerOptions?: Record<string, unknown>;
@@ -146,6 +148,8 @@ export interface AgentRuntime {
 }
 
 export type AgentRuntimeErrorCode =
+  | "RUNTIME_CONTEXT_OVERFLOW"
+  | "RUNTIME_SUMMARY_FAILED"
   | "RUNTIME_INVALID_INPUT"
   | "RUNTIME_RUN_EXISTS"
   | "RUNTIME_RUN_NOT_FOUND"
@@ -324,6 +328,7 @@ interface RuntimeRunState {
   toolCalls: number;
   usage: Usage;
   messageState: VersionedMessageState;
+  compaction?: CompactionState;
   toolTranscriptBytes: number;
   agentId?: string;
   terminalPublished: boolean;
@@ -396,6 +401,14 @@ function assertRunInput(input: RunInput): void {
     typeof input.eventStore.readSession !== "function"
   ) {
     throw new InvalidRunInputError("eventStore append/readSession are required");
+  }
+  if (input.contextPolicy !== undefined) {
+    const p = input.contextPolicy;
+    if (!p || typeof p !== "object" || Object.keys(p).sort().join() !== "reserveTokens,tailMessages,thresholdTokens,windowTokens" ||
+      Object.values(p).some(v=>!Number.isSafeInteger(v) || v<=0) ||
+      p.thresholdTokens >= p.windowTokens || p.reserveTokens >= p.windowTokens || p.tailMessages > 10000) {
+      throw new InvalidRunInputError("invalid context policy");
+    }
   }
   if (input.context !== undefined && !Array.isArray(input.context)) {
     throw new InvalidRunInputError("context must be an array");
@@ -575,6 +588,7 @@ function snapshotRunInput(input: RunInput): RunInput {
     taskId: input.taskId,
     workspace,
     context,
+    contextPolicy: input.contextPolicy ? {...input.contextPolicy} : undefined,
     system: input.system,
     maxTokens: input.maxTokens,
     providerOptions,
@@ -1116,7 +1130,7 @@ function equalToolJson(left: unknown, right: unknown): boolean {
  */
 export class MinimalAgentRuntime implements AgentRuntime {
   private readonly runs = new Map<string, RuntimeRunState | RunTombstone>();
-  private readonly sessions = new Map<string, { runId: string; turns: Set<string>; messages: VersionedMessageState; pending: SteeringMessage[]; usage: Usage; store: EventStore }>();
+  private readonly sessions = new Map<string, { runId: string; turns: Set<string>; messages: VersionedMessageState; pending: SteeringMessage[]; compaction?: CompactionState; usage: Usage; store: EventStore }>();
 
   run(input: RunInput): AsyncIterable<AgentEvent> {
     if (this.runs.has(input.runId)) throw new RunAlreadyExistsError(input.runId);
@@ -1157,6 +1171,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
       toolCalls: 0,
       usage: prior?.usage ?? emptyUsage(),
       messageState: createMessageState(snapshot.context),
+      compaction:prior?.compaction,
       toolTranscriptBytes: 0,
       terminalPublished: false,
       appendTail: Promise.resolve(),
@@ -1512,6 +1527,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
   ): Promise<void> {
     if (state.terminalPublished) return;
     const turnEvent = createEvent("turn.completed", {
+      errorCode:state.failure?.code,
       runId: state.input.runId,
       sessionId: state.input.sessionId,
       turnId: state.input.turnId,
@@ -1797,7 +1813,40 @@ export class MinimalAgentRuntime implements AgentRuntime {
     }
   }
 
-  private async requestModelRound(state: RuntimeRunState): Promise<{
+  private async compactContext(state: RuntimeRunState, before: ReturnType<typeof buildModelContext>): Promise<void> {
+    const policy = state.input.contextPolicy!;
+    let tailStart = Math.max(0,state.messageState.messages.length-policy.tailMessages);
+    // Never split assistant tool intentions from their observations.
+    while (tailStart > 0 && state.messageState.messages[tailStart]?.role === "tool") tailStart--;
+    if (tailStart === 0) throw new AgentRuntimeError("RUNTIME_CONTEXT_OVERFLOW", "no complete prefix is available for compaction");
+    const prefix = effectiveContext({ ...state.messageState, messages:state.messageState.messages.slice(0,tailStart) }, [], state.compaction && state.compaction.tailStart <= tailStart ? state.compaction : undefined);
+    let summary: string;
+    try { summary = (await this.requestModelRound(state, prefix)).response.content; }
+    catch (cause) {
+      if (cause instanceof RuntimeBudgetExceededError || cause instanceof CancellationRequested ||
+          (cause instanceof AgentRuntimeError && cause.code === "RUNTIME_CONTEXT_OVERFLOW") || state.appendFailure) throw cause;
+      throw new AgentRuntimeError("RUNTIME_SUMMARY_FAILED", "context summary failed", {cause});
+    }
+    const checkpoint: CompactionState = {version:1,summary,tailStart,throughRevision:state.messageState.revision};
+    const after = effectiveContext(state.messageState, before.tools, checkpoint);
+    const beforeTokens = contextOccupancy(before.messages,before.tools,state.input.system);
+    const afterTokens = contextOccupancy(after.messages,after.tools,state.input.system);
+    if (after.messages.length >= before.messages.length || afterTokens >= beforeTokens) {
+      throw new AgentRuntimeError("RUNTIME_CONTEXT_OVERFLOW", "summary did not reduce context occupancy");
+    }
+    await this.publish(state,createEvent("context.checkpoint",{
+      runId:state.input.runId,sessionId:state.input.sessionId,turnId:state.input.turnId,
+      ...checkpoint,tail:[...state.messageState.messages.slice(tailStart)],
+    },this.eventOptions(state)));
+    state.compaction = checkpoint;
+    await this.publish(state,createEvent("context.compacted",{
+      runId:state.input.runId,sessionId:state.input.sessionId,turnId:state.input.turnId,
+      summaryMessageId:this.newId(state,"summary"),summary,beforeMessages:before.messages.length,
+      afterMessages:after.messages.length,beforeTokens,afterTokens,
+    },this.eventOptions(state)));
+  }
+
+  private async requestModelRound(state: RuntimeRunState, summaryContext?: ReturnType<typeof buildModelContext>, allowCompaction = true): Promise<{
     requestId: string;
     outputMessageId: string;
     response: CompletionResponse;
@@ -1812,7 +1861,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
 
     await this.serialize(state, async () => {
       this.assertMayProduce(state);
-      const steeringCount = state.pendingSteering.length;
+      const steeringCount = summaryContext ? 0 : state.pendingSteering.length;
       for (const steering of state.pendingSteering.slice(0, steeringCount)) {
         state.messageState = appendMessage(state.messageState, {
           role: "user",
@@ -1828,7 +1877,28 @@ export class MinimalAgentRuntime implements AgentRuntime {
         await this.appendRaw(state, applied);
         this.enqueue(state, {event:applied});
       }
-      requestContext = buildModelContext(state.messageState, toolDefinitions);
+      requestContext = summaryContext ?? effectiveContext(state.messageState, toolDefinitions, state.compaction);
+      state.pendingSteering.splice(0, steeringCount);
+    });
+    const contextPolicy = state.input.contextPolicy;
+    const system = summaryContext ? "Summarize this conversation accurately, preserving constraints, decisions and unfinished work. No tool calls." : state.input.system;
+    if (contextPolicy) {
+      const occupied = contextOccupancy(requestContext.messages, requestContext.tools, system);
+      if (!summaryContext && allowCompaction && occupied >= contextPolicy.thresholdTokens) {
+        await this.compactContext(state, requestContext);
+        return this.requestModelRound(state, undefined, false);
+      }
+      await this.publish(state, createEvent("context.accounted", {
+        runId:state.input.runId,sessionId:state.input.sessionId,turnId:state.input.turnId,requestId,
+        occupancyTokens:occupied,windowTokens:contextPolicy.windowTokens,reserveTokens:contextPolicy.reserveTokens,
+        algorithm:"utf8-upper-bound/v1",summaryRequest:summaryContext !== undefined,
+      },this.eventOptions(state)));
+      if (occupied + contextPolicy.reserveTokens > contextPolicy.windowTokens) {
+        throw new AgentRuntimeError("RUNTIME_CONTEXT_OVERFLOW", "context plus reserved output cannot fit the configured window");
+      }
+    }
+    await this.serialize(state, async () => {
+      this.assertMayProduce(state);
       requestEvent = createEvent("model.request", {
         requestId,
         model: state.input.model,
@@ -1841,7 +1911,6 @@ export class MinimalAgentRuntime implements AgentRuntime {
         messageRevision: requestContext.messageRevision,
       }, this.eventOptions(state));
       await this.appendRaw(state, requestEvent);
-      state.pendingSteering.splice(0, steeringCount);
     });
     const requestAck = this.createAcknowledgement(state);
     this.enqueue(state, { event: requestEvent, acknowledge: requestAck.acknowledge });
@@ -1875,8 +1944,8 @@ export class MinimalAgentRuntime implements AgentRuntime {
         ? [...requestContext.tools]
         : undefined,
       model: state.input.model,
-      system: state.input.system,
-      maxTokens,
+      system,
+      maxTokens: contextPolicy ? Math.min(maxTokens ?? contextPolicy.reserveTokens, contextPolicy.reserveTokens) : maxTokens,
       providerOptions: state.input.providerOptions === undefined
         ? undefined
         : cloneUnknown(
@@ -2056,6 +2125,14 @@ export class MinimalAgentRuntime implements AgentRuntime {
       sessionId: state.input.sessionId,
       turnId: state.input.turnId,
     }, this.eventOptions(state)));
+
+    if (summaryContext) {
+      await this.checkModelRequestBudgets(state);
+      if (completed.finishReason !== "stop" || completed.toolCalls.length || !completed.content.trim()) {
+        throw new AgentRuntimeError("RUNTIME_SUMMARY_FAILED", "summary must finish with nonempty text and no tools");
+      }
+      return {requestId,outputMessageId,response:completed};
+    }
 
     state.messageState = appendMessage(state.messageState, {
       role: "assistant",
@@ -2673,7 +2750,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
           ? state.status
           : "failed";
       const session = this.sessions.get(state.input.sessionId);
-      if (session) { session.messages = state.messageState; session.pending = [...state.pendingSteering]; session.usage = state.usage; }
+      if (session) { session.messages = state.messageState; session.compaction = state.compaction; session.pending = [...state.pendingSteering]; session.usage = state.usage; }
       this.runs.set(state.input.runId, {
         kind: "terminal",
         runId: state.input.runId,
