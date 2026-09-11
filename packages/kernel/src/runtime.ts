@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { parseRuntimeCheckpoint, RuntimeCheckpointError, type RuntimeCheckpoint } from "./checkpoint";
 import { effectiveContext, contextOccupancy, type ContextPolicy, type CompactionState } from "./context";
 import { createEvent, type AnyHarnessEvent } from "@harness/events";
@@ -165,7 +166,8 @@ export type AgentRuntimeErrorCode =
   | "RUNTIME_MODEL_STREAM_INVALID"
   | "RUNTIME_MODEL_TIMEOUT"
   | "RUNTIME_BUDGET_EXCEEDED"
-  | "RUNTIME_CONSUMER_INVALID";
+  | "RUNTIME_CONSUMER_INVALID"
+  | "RUNTIME_REPEATED_DENIAL";
 
 export class AgentRuntimeError extends Error {
   constructor(
@@ -254,6 +256,24 @@ export class RuntimeBudgetExceededError extends AgentRuntimeError {
   }
 }
 
+/** Policy remains authoritative; this guard bounds unproductive denied retries. */
+export class RepeatedToolDenialError extends AgentRuntimeError {
+  constructor(readonly tool: string) {
+    super("RUNTIME_REPEATED_DENIAL", `stopped after 3 consecutive identical policy-denied calls to ${tool}`);
+  }
+}
+
+// Inputs are already bounded JSON. Ignore object insertion order, preserve array order.
+function denialFingerprint(value: unknown): string {
+  const canonical = (item: unknown): unknown => Array.isArray(item)
+    ? item.map(canonical)
+    : item !== null && typeof item === "object"
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+        .map(([key, entry]) => [key, canonical(entry)]))
+      : item;
+  return createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+}
+
 export class RuntimeConsumerError extends AgentRuntimeError {
   constructor(message: string) {
     super("RUNTIME_CONSUMER_INVALID", message);
@@ -336,6 +356,7 @@ interface RuntimeRunState {
   messageState: VersionedMessageState;
   compaction?: CompactionState;
   toolTranscriptBytes: number;
+  deniedCallStreak?: { fingerprint: string; count: number };
   agentId?: string;
   workspaceSnapshot?: string;
   terminalPublished: boolean;
@@ -1170,6 +1191,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
       agentId:state.agentId,workspaceSnapshot:state.workspaceSnapshot,toolDefinitions:[...state.toolDefinitions],
       terminalStatus,messageState:state.messageState,model:state.input.model,usage:state.usage,
       modelRequests:state.modelRequests,toolCalls:state.toolCalls,toolTranscriptBytes:state.toolTranscriptBytes,
+      deniedCallStreak:state.deniedCallStreak,
       seenModelCallIds:[...state.seenModelCallIds],runPermissionGrants:[...state.runPermissionGrants],warnedBudgets:[...state.warnedBudgets],
       pendingSteering:state.pendingSteering,sessionTurns:[...this.sessions.get(state.input.sessionId)!.turns],
       compaction:state.compaction,contextPolicy:state.input.contextPolicy,budget:state.input.budget,
@@ -1314,6 +1336,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
       state.toolCalls = continuation.toolCalls;
       state.toolTranscriptBytes = continuation.toolTranscriptBytes;
       state.compaction = continuation.compaction;
+      state.deniedCallStreak = continuation.deniedCallStreak;
       for (const id of continuation.seenModelCallIds) state.seenModelCallIds.add(id);
       for (const grant of continuation.runPermissionGrants) state.runPermissionGrants.add(grant);
       for (const metric of continuation.warnedBudgets) state.warnedBudgets.add(metric as RuntimeBudgetMetric);
@@ -2335,6 +2358,8 @@ export class MinimalAgentRuntime implements AgentRuntime {
     requestId: string,
     call: ToolCall,
   ): Promise<void> {
+    const previousDenial = state.deniedCallStreak;
+    state.deniedCallStreak = undefined;
     const callLimit = state.input.budget?.maxToolCalls;
     const nextCall = state.toolCalls + 1;
     const runtimeCallId = this.newId(state, "call");
@@ -2507,10 +2532,21 @@ export class MinimalAgentRuntime implements AgentRuntime {
     const grantKey = permissionGrantKey(intent);
     const hasRunGrant = scope === "run" && state.runPermissionGrants.has(grantKey);
     if (decision.effect === "deny") {
+      const fingerprint = denialFingerprint([call.name, validatedInput, intent, denialCode]);
+      const count = previousDenial?.fingerprint === fingerprint ? previousDenial.count + 1 : 1;
+      state.deniedCallStreak = { fingerprint, count };
       await this.publishToolObservation(state, runtimeCallId, call, {
         ok: false,
-        error: { code: denialCode, message: decision.reason },
+        error: { code: denialCode, message: `${decision.reason}. Do not repeat this denied call; choose a different permitted action. Three consecutive identical denials stop the run.` },
       });
+      if (count >= 3) {
+        const error = new RepeatedToolDenialError(call.name);
+        await this.publish(state, createEvent("error", {
+          code: error.code, message: error.message, runId: state.input.runId,
+          sessionId: state.input.sessionId, retryable: false,
+        }, this.eventOptions(state)));
+        throw error;
+      }
       return;
     }
 
