@@ -1,4 +1,5 @@
-import { validateRunReport } from "@harness/sdk";
+import { validateRunReport, loadTaskManifestFile } from "@harness/sdk";
+import { createNativeTaskAgent } from "../src/native-agent";
 import { it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
@@ -9,6 +10,35 @@ import { runBootstrapTask } from "../src/bootstrap";
 import { FakeModel } from "../../../packages/models/src";
 import { verifyNativeEvidence } from "../src/native-attestation";
 const image = `node@sha256:${"a".repeat(64)}`;
+it("native model deadline aborts a pending request and rejects invalid configuration before Docker", async () => {
+    const root = fixture();
+    try {
+        const manifestPath = join(root, "tasks/native.yaml");
+        const input = { cwd: root, manifestPath, manifest: await loadTaskManifestFile(manifestPath), branch: "tasks/native", prompt: "wait", timeoutMs: 5000 };
+        for (const modelTimeoutMs of [0, -1, 1.5, NaN, Infinity, 2_147_483_648]) {
+            await expect(createNativeTaskAgent({ image, modelTimeoutMs }).run(input)).rejects.toMatchObject({ code: "NATIVE_CONFIG_INVALID" });
+        }
+        let aborted = false;
+        const agent = createNativeTaskAgent({ image, modelTimeoutMs: 20, modelAdapter: {
+            async *stream(request) {
+                await new Promise<void>((_resolve, reject) => {
+                    const abort = () => { aborted = true; reject(request.signal!.reason); };
+                    if (request.signal!.aborted) abort();
+                    else request.signal!.addEventListener("abort", abort, { once: true });
+                });
+            },
+        }, executor: { async execute(_program, args, options) {
+            const result = { exitCode: 0, stdout: "", stderr: "", timedOut: false, aborted: false, outputTruncated: false };
+            if (args[0] === "rm") return result;
+            options.onSpawn?.();
+            writeFileSync(args[args.indexOf("--cidfile") + 1]!, "a".repeat(64));
+            const input = JSON.parse(options.input!);
+            return { ...result, stdout: JSON.stringify({ version: 1, files: input.files, result: { exitCode: 0, stdout: "", stderr: "", timedOut: false } }) };
+        } } });
+        await expect(agent.run(input)).rejects.toMatchObject({ code: "RUNTIME_MODEL_TIMEOUT", timeoutMs: 20 });
+        expect(aborted).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+});
 function git(root: string, ...args: string[]) { return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim(); }
 function fixture() {
     const root = mkdtempSync(join(tmpdir(), "m16-"));
@@ -34,7 +64,7 @@ it("M16/M17 offline native edit/test/diff, restart, clean authorship and candida
     const model = new FakeModel([{ toolCalls: [{ id: "write", name: "fs.write", arguments: { path: "fixture.txt", contents: "new\n" } }] }, { toolCalls: [{ id: "test", name: "process.exec", arguments: { argv: ["fixture-tests"] } }] }, { toolCalls: [{ id: "diff", name: "git.diff", arguments: {} }] }, { content: "done" }]);
     try {
         const main = git(root, "rev-parse", "main");
-        const outcome = await runBootstrapTask({ cwd: root, manifestPath: "tasks/native.yaml", approveWrite: true, testCommand: `node -e "if(require('fs').readFileSync('fixture.txt','utf8').trim()!=='new')process.exit(1)"`, nativeSigningKey: keys.privateKey, native: { image, modelAdapter: model, restartAtSafeBoundary: true, executor: { async execute(_program, args, options) {
+        const outcome = await runBootstrapTask({ cwd: root, manifestPath: "tasks/native.yaml", approveWrite: true, testCommand: `node -e "if(require('fs').readFileSync('fixture.txt','utf8').trim()!=='new')process.exit(1)"`, nativeSigningKey: keys.privateKey, native: { image, modelAdapter: model, modelTimeoutMs: 600000, restartAtSafeBoundary: true, executor: { async execute(_program, args, options) {
                         const result = { exitCode: 0, stdout: "", stderr: "", timedOut: false, aborted: false, outputTruncated: false };
                         if (args[0] === "rm")
                             return result;
@@ -63,6 +93,9 @@ it("M16/M17 offline native edit/test/diff, restart, clean authorship and candida
             eventId: string;
         }[];
         expect(events.filter(e => e.type === "runtime.continued")).toHaveLength(1);
+        const checkpoints = (JSON.parse(readFileSync(join(root, att.eventLogPath), "utf8")) as { type: string; data: { payload?: { settings?: { modelTimeoutMs?: number } } } }[]).filter(e => e.type === "runtime.checkpoint");
+        expect(checkpoints.length).toBeGreaterThan(0);
+        expect(checkpoints.every(e => e.data.payload?.settings?.modelTimeoutMs === 600000)).toBe(true);
         expect(events.filter(e => e.type === "policy.decision")).toHaveLength(3);
         expect(new Set(events.map(e => e.eventId)).size).toBe(events.length);
         git(root, "add", "fixture.txt", "tasks/native.yaml");

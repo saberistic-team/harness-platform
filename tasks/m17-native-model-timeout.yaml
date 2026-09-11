@@ -1,0 +1,26 @@
+id: m17-native-model-timeout
+title: Configure bounded native model request deadlines
+goal: Expose the existing kernel modelTimeoutMs option at the native TaskAgent boundary so large local models can use a deliberate bounded request deadline.
+acceptance:
+  - Native options forward an explicit model timeout to the kernel and durable continuation
+  - Omission retains the kernel default and invalid timeouts fail closed before workspace execution
+  - Offline tests verify configured timeout enforcement and checkpoint persistence
+  - Full tests, typecheck and exit gate pass
+allowed_paths:
+  - apps/cli/src/native-agent.ts
+  - apps/cli/test/native.test.ts
+  - tasks/m17-native-model-timeout.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "git *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+budget:
+  max_model_tokens: 40000
+  max_tool_calls: 100
+delivery:
+  type: pull_request
