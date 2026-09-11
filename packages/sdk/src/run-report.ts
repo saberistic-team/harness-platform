@@ -54,6 +54,21 @@ export const runReportFailureSchema = z
 
 export type RunReportFailure = z.infer<typeof runReportFailureSchema>;
 
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/u);
+export const nativeBuilderAttestationSchema = z.object({
+  version:z.literal("native-builder/v1"), entrypoint:z.literal("MinimalAgentRuntime.TaskAgent/v1"),
+  builderSourceRevision:sha256, image:z.string().regex(/@sha256:[a-f0-9]{64}$/u), model:identifier,
+  manifestDigest:sha256, inputBaseSha:z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u),
+  workspaceId:identifier, sessionId:identifier, runId:identifier,
+  initialSnapshot:sha256, generatedSnapshot:sha256, generatedTree:identifier,
+  patchDigest:sha256, workspacePatchDigest:sha256, eventLogDigest:sha256, workspaceLogDigest:sha256,
+  preBuilder:z.object({changes:z.array(z.object({origin:z.enum(["committed","staged","unstaged","untracked"]),status:identifier,path:identifier,oldPath:identifier.optional()}).strict()),policyPaths:z.array(z.string())}).strict(),
+  postBuilder:z.object({changes:z.array(z.object({origin:z.enum(["committed","staged","unstaged","untracked"]),status:identifier,path:identifier,oldPath:identifier.optional()}).strict()),policyPaths:z.array(z.string())}).strict(),
+  preBuilderTree:identifier,
+  patchPath:identifier,eventLogPath:identifier,workspaceLogPath:identifier,
+}).strict();
+export type NativeBuilderAttestation = z.infer<typeof nativeBuilderAttestationSchema>;
+
 export const runReportBuilderSchema = z
   .object({
     /** Stable identity of the TaskAgent adapter (for example, upstream Pi). */
@@ -62,6 +77,7 @@ export const runReportBuilderSchema = z
     durationMs: z.number().nonnegative(),
     exitCode: z.number().int().optional(),
     outputTail: z.string().default(""),
+    nativeAttestation: nativeBuilderAttestationSchema.optional(),
   })
   .strict();
 
@@ -165,6 +181,7 @@ export const runReportSchema = z.object({
   failure: runReportFailureSchema.optional(),
   /** Ordered failure trail; `failure` remains the primary compatibility field. */
   failures: z.array(runReportFailureSchema).min(1).optional(),
+  nativeSeal: z.object({algorithm:z.literal("Ed25519"),publicKey:z.string(),signature:z.string()}).strict().optional(),
   modelUsage: z
     .object({
       totalModelTokens: z.number().int().nonnegative(),

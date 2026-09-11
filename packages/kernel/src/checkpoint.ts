@@ -4,10 +4,13 @@ import { buildModelContext, type VersionedMessageState } from "./state";
 import type { CompactionState, ContextPolicy } from "./context";
 export interface RuntimeCheckpoint {
   version: 1;
+  agentId?: string;
+  workspaceSnapshot?: string;
+  toolDefinitions?: import("@harness/models").ToolDefinition[];
   runId: string;
   sessionId: string;
   turnId: string;
-  phase: "model" | "summary" | "terminal";
+  phase: "safe" | "model" | "summary" | "terminal";
   terminalStatus?: "completed" | "failed" | "canceled" | "budget_exceeded";
   messageState: VersionedMessageState;
   model: string;
@@ -39,7 +42,8 @@ export class RuntimeCheckpointError extends Error {
 const count = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const id = z.string().min(1).max(256);
 const schema = z.object({
-  version: z.literal(1), runId: id, sessionId: id, turnId: id, phase: z.enum(["model", "summary", "terminal"]),
+  agentId:id.optional(),workspaceSnapshot:id.optional(),toolDefinitions:z.array(z.unknown()).optional(),
+  version: z.literal(1), runId: id, sessionId: id, turnId: id, phase: z.enum(["safe", "model", "summary", "terminal"]),
   terminalStatus: z.enum(["completed", "failed", "canceled", "budget_exceeded"]).optional(),
   messageState: z.object({ version: z.literal(1), revision: count, messages: z.array(z.unknown()).max(10000) }).strict(),
   model: id, usage: z.object({ promptTokens: count, completionTokens: count, totalTokens: count }).strict(),
@@ -77,6 +81,10 @@ export function parseRuntimeCheckpoint(value: unknown): RuntimeCheckpoint {
     if (parsed.phase === "terminal") {
       if (!parsed.terminalStatus || parsed.nextRequest)
         throw Error("invalid terminal checkpoint");
+    }
+    else if (parsed.phase === "safe") {
+      if (parsed.nextRequest || parsed.terminalStatus || !parsed.agentId || !parsed.toolDefinitions) throw Error("invalid safe checkpoint");
+      buildModelContext(parsed.messageState as VersionedMessageState,parsed.toolDefinitions as Parameters<typeof buildModelContext>[1]);
     }
     else {
       if (!parsed.nextRequest || parsed.terminalStatus)

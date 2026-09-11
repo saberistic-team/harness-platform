@@ -246,7 +246,8 @@ function volatileTestCachePath(path: string): boolean {
 }
 
 function evidenceOutputPath(path: string): boolean {
-  return SQLITE_EVIDENCE_PATH.test(path) ||
+  return /^tasks\/runs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:patch|events\.json|workspace\.json)$/u.test(path) ||
+    SQLITE_EVIDENCE_PATH.test(path) ||
     REPORT_EVIDENCE_PATH.test(path) ||
     LEGACY_REPORT_EVIDENCE_PATH.test(path);
 }

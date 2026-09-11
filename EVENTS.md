@@ -356,3 +356,24 @@ isolated Workspace. Local or forged workspaces fail before effects and persist
 `tool.result.error.code = WORKSPACE_ISOLATION_REQUIRED`. This removes the host
 path-check/rename race from the model capability surface; trusted developer
 LocalWorkspace APIs are not promoted into model mutation authority.
+
+
+M15 adds `runtime.continued` (`runId`, `sessionId`, `turnId`,
+`checkpointRevision`, `ownerId`). SQLite/Postgres append it in the same
+transaction that replaces an expired owner and advances the safe checkpoint
+cursor. A crash during takeover leaves either the old safe boundary or the
+new safe boundary; stale owners cannot append. `runtime.checkpoint` v1 adds
+phase `safe`, agent identity, reviewed tool definitions and workspace snapshot.
+Safe checkpoints precede model intent. Model/summary checkpoints remain
+indeterminate execution markers, never permission to retry. Continuation
+preserves the original turn and does not emit another `agent.started`,
+`turn.started`, or input message. Uncertain recovery uses M4 `session.restored`
+with outcome `interrupted`; cancellation completes the original turn as canceled.
+
+M17 adds `builder.attested` with gate task/run/session IDs, native run ID,
+`native-builder/v1` version and attestation digest. The gate emits it only for
+its registered native TaskAgent result after clean input, unchanged manifest,
+source identity and generated scope checks. Native runtime and workspace
+lifecycle logs are separate signed-digest artifacts. The complete v2 report is
+sealed after tests and generated-tree verification. Candidate/accepted tree
+verification is read-only and returns `native-acceptance/v1` evidence.

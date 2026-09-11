@@ -68,6 +68,14 @@ export interface SessionCheckpoint {
   updatedAt: string;
 }
 
+export interface ContinueSessionOptions {
+  expectedRevision: number;
+  expectedMetadata: SessionMetadata;
+  ownerId: string;
+  leaseExpiresAt: string;
+  event: AnyHarnessEvent;
+}
+
 export interface SaveCheckpointOptions {
   /** Checked under the same row lock/transaction as checkpoint CAS. */
   ownerId?: string;
@@ -158,6 +166,7 @@ export interface SessionStore {
     options?: EventLogOptions,
   ): Promise<SessionRecord>;
   getCheckpoint(sessionId: string): Promise<SessionCheckpoint | undefined>;
+  continueSession(sessionId: string, options: ContinueSessionOptions): Promise<SessionCheckpoint>;
   /**
    * Advance a checkpoint with revision CAS and a nondecreasing event cursor.
    * Retrying the immediately preceding identical cursor/payload is idempotent.
@@ -352,4 +361,20 @@ export function decodeMetadata(wire: unknown): SessionMetadata {
     throw new SessionStoreError("SESS_INVALID_RECORD", "session metadata must be a JSON object");
   }
   return value as Record<string, unknown>;
+}
+
+/** Called under the session write lock; a tail means the checkpoint may have executed. */
+export function assertContinuation(record: SessionRecord, checkpoint: SessionCheckpoint | undefined, nextSeq: number, options: ContinueSessionOptions, now: string): asserts checkpoint is SessionCheckpoint {
+  assertOwnerId(options.ownerId);
+  if (record.status !== "active" || encodeMetadata(record.metadata) !== encodeMetadata(options.expectedMetadata))
+    throw new SessionStoreError("SESS_RECOVERY_CONFLICT", "continuation ownership changed");
+  assertRecoveryLeaseExpired(record.metadata, now);
+  if (options.ownerId === record.metadata.ownerId || !Number.isFinite(Date.parse(options.leaseExpiresAt)) || Date.parse(options.leaseExpiresAt) <= Date.parse(now))
+    throw new SessionStoreError("SESS_INVALID_RECORD", "continuation requires a fresh owner and live lease");
+  const payload = checkpoint?.payload as {phase?:string;runId?:string;turnId?:string;sessionId?:string}|undefined;
+  if (!checkpoint || checkpoint.revision !== options.expectedRevision || checkpoint.afterSeq !== nextSeq - 1 || payload?.phase !== "safe")
+    throw new SessionStoreError("SESS_RECOVERY_CONFLICT", "interrupted/indeterminate segment: no unconsumed safe checkpoint");
+  const e = options.event;
+  if (e.type !== "runtime.continued" || e.data.sessionId !== record.sessionId || e.data.sessionId !== payload.sessionId || e.data.runId !== payload.runId || e.data.turnId !== payload.turnId || e.data.ownerId !== options.ownerId || e.data.checkpointRevision !== checkpoint.revision)
+    throw new SessionStoreError("SESS_INVALID_RECORD", "continuation event identity mismatch");
 }

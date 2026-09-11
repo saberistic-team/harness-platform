@@ -8,6 +8,8 @@ import {
   type AnyHarnessEvent,
 } from "@harness/events";
 import {
+  assertContinuation,
+  type ContinueSessionOptions,
   assertAppendOwnership,
   assertRecoveryLeaseExpired,
   assertOwnerId,
@@ -755,6 +757,23 @@ export class SqliteSessionStore implements SessionStore {
         payload: decodeSessionJson(payload, "session checkpoint"),
         updatedAt,
       };
+    });
+  }
+
+  async continueSession(sessionId: string, options: ContinueSessionOptions): Promise<SessionCheckpoint> {
+    this.assertOpen(); assertSessionId(sessionId);
+    const canonical = canonicalEvent(options.event);
+    return transaction(this.db, () => {
+      const row = selectSessionRow(this.db, sessionId);
+      const record = recordFromRow(row, sessionId);
+      const checkpoint = checkpointFromRow(row!, sessionId);
+      assertContinuation(record, checkpoint, row!.next_seq, options, this.now());
+      const continued = appendEventInTransaction(this.db, sessionId, canonical.event, undefined, this.now).stored;
+      this.db.prepare("UPDATE sessions SET metadata = ? WHERE session_id = ?")
+        .run(encodeMetadata({...record.metadata, ownerId:options.ownerId, leaseExpiresAt:options.leaseExpiresAt}), sessionId);
+      this.db.prepare("UPDATE sessions SET checkpoint_revision = ?, checkpoint_seq = ? WHERE session_id = ?")
+        .run(checkpoint.revision + 1, continued.seq, sessionId);
+      return {...checkpoint,revision:checkpoint.revision+1,afterSeq:continued.seq};
     });
   }
 

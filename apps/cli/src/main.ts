@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { createPrivateKey } from "node:crypto";
+import { verifyNativeEvidence } from "./native-attestation";
+import { validateRunReport } from "@harness/sdk";
 import { cwd as processCwd } from "node:process";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
@@ -17,7 +21,9 @@ Usage:
   harness validate <manifest.yaml>        validate a task manifest
   harness run <manifest.yaml> [options]   run the exit gate
   harness bootstrap <manifest.yaml> [options]
-                                        run upstream Pi, then the exit gate
+                                        run the offline native kernel, then the exit gate
+  harness verify-native <report.json> --trusted-key <public.pem> --candidate <commit>
+                       [--accepted <commit> --accepted-base <commit>]
   harness help                            show this help
 
 Run options:
@@ -31,9 +37,11 @@ Run options:
 
 Bootstrap-only options:
   --approve-write      resolve a manifest fs.write: ask for this run
-  --pi-bin <path>      upstream Pi executable (default: pi)
+  --native-image <ref>  immutable Docker image (or HARNESS_NATIVE_IMAGE)
+  --native-signing-key <private.pem>  trusted gate signing key
+  --pi-bin <path>       explicitly select the legacy upstream Pi adapter
   --agent-timeout-ms <n>
-                       Pi timeout (default: 900000)
+                       builder timeout (default: 900000)
 `;
 
 function fail(message: string): never {
@@ -52,6 +60,19 @@ export async function runCli(
   if (cmd === "help" || cmd === "--help" || cmd === "-h" || cmd === undefined) {
     out(HELP);
     return cmd === undefined ? 1 : 0;
+  }
+
+  if(cmd === "verify-native" && rest[0]) {
+    const values=new Map<string,string>();
+    for(let i=1;i<rest.length;i+=2){
+      const key=rest[i]!,value=rest[i+1];
+      if(!["--trusted-key","--candidate","--accepted","--accepted-base"].includes(key) || !value || values.has(key))return fail("invalid native verification option");
+      values.set(key,value);
+    }
+    if(!values.has("--trusted-key") || !values.has("--candidate") || values.has("--accepted")!==values.has("--accepted-base"))return fail("native verification requires a separately trusted key and candidate; accepted commit requires its base");
+    const report=validateRunReport(JSON.parse(readFileSync(resolve(cwd,rest[0]),"utf8")));
+    const binding=verifyNativeEvidence(cwd,report,readFileSync(resolve(cwd,values.get("--trusted-key")!),"utf8"),values.get("--candidate")!,values.has("--accepted")?{commit:values.get("--accepted")!,base:values.get("--accepted-base")!}:undefined);
+    out(JSON.stringify(binding,null,2));return 0;
   }
 
   if (cmd === "validate" && rest[0]) {
@@ -79,6 +100,8 @@ export async function runCli(
     let headSha: string | undefined;
     let approveWrite = false;
     let piExecutable: string | undefined;
+    let nativeImage:string|undefined;
+    let nativeSigningKey:string|undefined;
     let agentTimeoutMs: number | undefined;
     const value = (index: number, flag: string): string => {
       const next = rest[index + 1];
@@ -101,6 +124,10 @@ export async function runCli(
       else if (flag === "--head-sha") headSha = value(i++, flag);
       else if (cmd === "bootstrap" && flag === "--approve-write") {
         approveWrite = true;
+      } else if (cmd === "bootstrap" && flag === "--native-image") {
+        nativeImage=value(i++,flag);
+      } else if (cmd === "bootstrap" && flag === "--native-signing-key") {
+        nativeSigningKey=value(i++,flag);
       } else if (cmd === "bootstrap" && flag === "--pi-bin") {
         piExecutable = value(i++, flag);
       } else if (cmd === "bootstrap" && flag === "--agent-timeout-ms") {
@@ -141,6 +168,8 @@ export async function runCli(
             ...common,
             approveWrite,
             piExecutable,
+            ...(nativeImage?{native:{image:nativeImage}}:{}),
+            ...(nativeSigningKey?{nativeSigningKey:createPrivateKey(readFileSync(resolve(cwd,nativeSigningKey)))}:{}),
             agentTimeoutMs,
           })
         : await runTask(common);

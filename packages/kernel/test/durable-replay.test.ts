@@ -35,7 +35,7 @@ it("M14 SQLite reopen replays stable IDs and recreates exact requests and a foll
     }
     const before = await collect(adapter.readSession("s"));
     const checkpoint = await adapter.loadCheckpoint();
-    expect(checkpoint!.revision).toBe(3);
+    expect(checkpoint!.revision).toBe(5);
     // Any identical old event, including an old checkpoint, is safe to redeliver.
     await adapter.append(before[0]!);
     await adapter.append(modelCheckpoints[0]!);

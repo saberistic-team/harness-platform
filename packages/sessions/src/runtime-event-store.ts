@@ -1,4 +1,4 @@
-import { deserializeEvent, serializeEvent, type AnyHarnessEvent } from "@harness/events";
+import { createEvent, deserializeEvent, serializeEvent, type AnyHarnessEvent } from "@harness/events";
 import { assertOwnerId, assertSessionId, SessionStoreError, type SessionStore, type SessionCheckpoint } from "./store";
 /** Production adapter for the kernel's structurally compatible EventStore port. */
 export class SessionEventStore {
@@ -59,6 +59,34 @@ export class SessionEventStore {
       afterSeq = page.nextAfterSeq;
     }
   }
+  async markInterrupted(): Promise<void> {
+    await this.tail;
+    const record=await this.store.getSession(this.sessionId);
+    const events:AnyHarnessEvent[]=[];for await(const event of this.readSession(this.sessionId))events.push(event);
+    const checkpoint=await this.store.getCheckpoint(this.sessionId);
+    // A competing healthy owner must never be closed by the losing claimant.
+    if(Date.parse(String(record.metadata.leaseExpiresAt)) > Date.parse(await this.store.currentTime()))return;
+    await this.store.recoverInterrupted(this.sessionId,createEvent("session.restored",{
+      sessionId:this.sessionId,afterSeq:checkpoint?.afterSeq??-1,availableThroughSeq:events.length-1,
+      availableEvents:events.length,outcome:"interrupted",note:"indeterminate segment; automatic execution forbidden",
+    }),undefined,record.metadata);
+  }
+
+  async claimContinuation(identity: {runId:string;sessionId:string;turnId:string}): Promise<{payload:unknown}> {
+    await this.tail;
+    if (identity.sessionId !== this.sessionId) throw new SessionStoreError("SESS_INVALID_RECORD", "session mismatch");
+    const checkpoint = await this.store.getCheckpoint(this.sessionId);
+    const record = await this.store.getSession(this.sessionId);
+    const now = await this.store.currentTime();
+    const saved = await this.store.continueSession(this.sessionId, {
+      expectedRevision: checkpoint?.revision ?? 0, expectedMetadata:record.metadata,
+      ownerId:this.ownerId, leaseExpiresAt:new Date(Date.parse(now) + 60_000).toISOString(),
+      event:createEvent("runtime.continued", {...identity, ownerId:this.ownerId, checkpointRevision:checkpoint?.revision ?? 1}),
+    });
+    this.revision = saved.revision;
+    return saved;
+  }
+
   async loadCheckpoint(): Promise<SessionCheckpoint | undefined> {
     await this.tail;
     const checkpoint = await this.store.getCheckpoint(this.sessionId);

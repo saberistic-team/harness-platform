@@ -569,3 +569,25 @@ it("M14 Postgres EventStore preserves event identity, checkpoint CAS and ordered
  expect(reconstructModelRequest((await adapter.loadCheckpoint())!.payload)).toEqual(payload.nextRequest);
  db.expectDone();
 });
+
+it("M15 continuation locks and fences the expired owner, advancing the safe cursor in the same transaction",async()=>{
+ const metadata={ownerId:"old",leaseExpiresAt:"2026-01-01T00:00:01Z"};
+ const payload={version:1,phase:"safe",runId:"r",sessionId:"sess-pg",turnId:"t"};
+ const continued=createEvent("runtime.continued",{runId:"r",sessionId:"sess-pg",turnId:"t",ownerId:"new",checkpointRevision:1});
+ const db=new ScriptedDatabase([
+  {tag:"sessions:session-lock",rows:[sessionRow({metadata:JSON.stringify(metadata),next_seq:"1",checkpoint_revision:"1",checkpoint_seq:"0",checkpoint_payload:JSON.stringify(payload),checkpoint_updated_at:"2026-01-01T00:00:00Z"})]},
+  {tag:"sessions:event-by-id",rows:[]},
+  {tag:"sessions:global-seq-allocate",rows:[{global_seq:"1"}]},
+  {tag:"sessions:event-insert",rows:[eventRow(continued,1,1)]},
+  {tag:"sessions:next-seq-advance",rowCount:1},
+  {tag:"sessions:continue-owner",values:[JSON.stringify({...metadata,ownerId:"new",leaseExpiresAt:"2026-01-01T02:00:00Z"}),"sess-pg"]},
+  {tag:"sessions:continue-checkpoint",values:[2,1,"sess-pg"]},
+ ]);
+ const checkpoint=await storeWith(db).continueSession("sess-pg",{expectedRevision:1,expectedMetadata:metadata,ownerId:"new",leaseExpiresAt:"2026-01-01T02:00:00Z",event:continued});
+ expect(checkpoint).toMatchObject({revision:2,afterSeq:1,payload});expect(db.transactionRuns).toBe(1);db.expectDone();
+});
+it("M15 Postgres refuses a model-intent tail before allocating any continuation event",async()=>{
+ const metadata={ownerId:"old",leaseExpiresAt:"2026-01-01T00:00:01Z"};
+ const db=new ScriptedDatabase([{tag:"sessions:session-lock",rows:[sessionRow({metadata:JSON.stringify(metadata),next_seq:"2",checkpoint_revision:"1",checkpoint_seq:"0",checkpoint_payload:JSON.stringify({phase:"safe"}),checkpoint_updated_at:"2026-01-01T00:00:00Z"})]}]);
+ await expect(storeWith(db).continueSession("sess-pg",{expectedRevision:1,expectedMetadata:metadata,ownerId:"new",leaseExpiresAt:"2026-01-01T02:00:00Z",event:createEvent("runtime.continued",{runId:"r",sessionId:"sess-pg",turnId:"t",ownerId:"new",checkpointRevision:1})})).rejects.toMatchObject({code:"SESS_RECOVERY_CONFLICT"});db.expectDone();
+});

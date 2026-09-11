@@ -202,6 +202,15 @@ export const steeringApplied = envelope("steering.applied", z.object({
 }).strict());
 
 /** Full runtime checkpoint; its independently versioned payload is parsed by the kernel. */
+export const builderAttested = envelope("builder.attested", z.object({
+  taskId:id,runId:id,sessionId:id,nativeRunId:id,attestationDigest:z.string().regex(/^[a-f0-9]{64}$/u),
+  version:z.literal("native-builder/v1"),
+}).strict());
+
+export const runtimeContinued = envelope("runtime.continued", z.object({
+  ...runtimeIdentity, checkpointRevision: positiveEventCount, ownerId: id,
+}).strict());
+
 export const runtimeCheckpoint = envelope("runtime.checkpoint", z.object({
   ...runtimeIdentity, version:z.literal(1), payload:z.record(z.unknown()),
 }).strict());
@@ -626,6 +635,8 @@ export const eventSchemas = {
   "context.checkpoint": contextCheckpoint,
   "context.accounted": contextAccounted,
   "runtime.checkpoint": runtimeCheckpoint,
+  "runtime.continued": runtimeContinued,
+  "builder.attested": builderAttested,
   "turn.completed": turnCompleted,
   "model.request": modelRequest,
   "model.response": modelResponse,

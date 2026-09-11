@@ -144,8 +144,8 @@ and the checked-in Compose stack is not a complete control-plane integration.
   numeric profile meeting the language-strategy criteria in `ARCHITECTURE.md`.
 
 The M6–M76 sequence below is dependency ordered. M6–M10 are complete;
-M11–M14 implementations and their gates are recorded below.
-M15–M76 remain planned. `tasks/m6-minimal-kernel-roadmap` records the earlier
+M11–M17 implementations and their gates are recorded below.
+M18–M76 remain planned. `tasks/m6-minimal-kernel-roadmap` records the earlier
 M6–M12 plan; `tasks/m8-platform-roadmap-decomposition` replaces only its
 unimplemented portion with the smaller milestones below. Each implementation
 milestone uses its own manifest, `tasks/<id>` branch, PR, tests, exit-gate
@@ -157,9 +157,9 @@ implementation.
 This sequence was reconciled against the implemented repository and the full
 platform plan, not written as a greenfield wish list:
 
-- M6–M7 provide the deterministic `MinimalAgentRuntime`, but no CLI or service
-  uses it as the production authoring path yet. M16 converges the existing
-  TaskAgent exit-gate seam onto that runtime; M43 later migrates the M3 service.
+- M6–M7 provide the deterministic `MinimalAgentRuntime`. M16 now connects the
+  native TaskAgent exit-gate seam to it; M43 later migrates the M3 service.
+  Live self-hosting qualification remains the separate M18 gate.
 - Before M8, `packages/workspace` was only a lexical resolver and
   `packages/tools` contained one host `read_file`, pure fixtures, and the M3
   `sandbox_exec` seam. M8 established the operational Workspace contract and
@@ -692,7 +692,7 @@ request. Future checkpoint versions fail explicitly rather than falling back.
 ordered session, reject conflicting duplicates and stale owners, and recreate
 the exact next model request from a committed checkpoint.
 
-## M15 — Restart-safe continuation (planned)
+## M15 — Restart-safe continuation (implemented; offline gate)
 
 Extend M4 recovery with an explicit fenced continuation (or continuation-run)
 primitive for a committed safe checkpoint. Preserve the conservative rule for
@@ -708,7 +708,7 @@ from an uncertain effect and cover cancellation during recovery.
 the last committed safe boundary and never duplicates an event, model turn, or
 tool side effect.
 
-## M16 — Offline kernel-backed self-host runner (planned)
+## M16 — Offline kernel-backed self-host runner (implemented; offline gate)
 
 Integrate the new runtime as a TaskAgent path behind the existing exit gate.
 The trusted CLI still validates the canonical manifest, creates or selects the
@@ -734,7 +734,7 @@ returns a passing report plus reviewable patch without touching `main` or
 invoking upstream Pi. This qualifies the offline integration mechanism; it
 does not yet prove authorship or activate the self-hosting ratchet.
 
-## M17 — Native-builder authorship attestation (planned)
+## M17 — Native-builder authorship attestation (implemented; offline gate)
 
 Add a versioned native-builder attestation rather than relying on the free-form
 builder name in `run-report/v2`. Preserve the clean pre-builder and
@@ -756,6 +756,20 @@ run cannot claim pre-authored source, and an honest run binds clean base,
 manifest, runtime, model, workspace, events, generated tree/diff, candidate
 commit, and accepted tree without an identity gap. This attests the path that
 will perform M18; it does not make the M17 implementation a qualified builder.
+
+M15–M17 delivery: `tasks/m15-m17-native-continuation.yaml`.
+`packages/kernel/test/continuation.test.ts` injects failures before/after every
+append and around the tool effect, tests cancellation, and kills an actual
+child process after a committed tool round. SQLite reopens without duplicating
+the effect; Postgres transaction fixtures cover owner/cursor fencing.
+`apps/cli/test/native.test.ts` exercises the clean temporary repository,
+Docker protocol fixture, five-tool native runtime, safe restart, scoped patch,
+exit tests, signed report, independently seeded source rejection, and exact
+candidate/accepted output verification. `harness verify-native` produces the
+portable acceptance binding using a separately pinned trust key. Source
+revision is the content digest of platform TypeScript sources and the lockfile.
+No live provider, deployed Docker image, accepted repository merge, or M18
+builder qualification is asserted by these offline tests.
 
 ## M18 — First live self-hosted `harness doctor` change (planned)
 
