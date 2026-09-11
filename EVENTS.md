@@ -335,3 +335,9 @@ usage and hard budget; they do not execute tools. A failed summary or context
 that cannot fit fails closed with `turn.completed.errorCode` equal to
 `RUNTIME_SUMMARY_FAILED` or `RUNTIME_CONTEXT_OVERFLOW`. Usage is cumulative
 across same-session turns; occupancy is measured independently per request.
+
+M11 native model mutations (`fs.write`, `process.exec`) require the attested
+isolated Workspace. Local or forged workspaces fail before effects and persist
+`tool.result.error.code = WORKSPACE_ISOLATION_REQUIRED`. This removes the host
+path-check/rename race from the model capability surface; trusted developer
+LocalWorkspace APIs are not promoted into model mutation authority.

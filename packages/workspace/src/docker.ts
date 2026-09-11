@@ -1,3 +1,4 @@
+import { attestIsolatedWorkspace } from "./isolation";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -49,6 +50,7 @@ export class DockerWorkspace implements Workspace {
     this.tree = { ...this.initial };
     this.audit = new WorkspaceAudit("docker", options.onEvent);
     this.root = mkdtempSync(join(tmpdir(), "harness-workspace-"));
+    attestIsolatedWorkspace(this);
   }
   static async create(options: DockerWorkspaceOptions): Promise<DockerWorkspace> {
     // All configuration validation precedes even reading the source repository.
