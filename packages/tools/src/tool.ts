@@ -36,11 +36,8 @@ export type ToolExecutionBoundary =
   | Readonly<{ kind: "pure" }>
   | Readonly<{
       kind: "workspace";
-      access: "read";
-      capability: Extract<
-        WorkspaceCapability,
-        "readFile" | "listFiles" | "diff" | "snapshot"
-      >;
+      access: "read" | "write" | "execute";
+      capability: Exclude<WorkspaceCapability, "dispose">;
       root: string;
     }>
   | Readonly<{ kind: "sandbox"; root: string }>;
@@ -151,12 +148,12 @@ function normalizeExecutionBoundary(value: unknown): ToolExecutionBoundary {
     const access = read("access");
     const capability = read("capability");
     const root = read("root");
-    if (access !== "read") {
+    if (!["read", "write", "execute"].includes(String(access))) {
       return invalidBoundary("workspace tool boundary access must be read");
     }
     if (
       typeof capability !== "string" ||
-      !READ_ONLY_WORKSPACE_CAPABILITIES.has(capability)
+      !(access === "read" ? READ_ONLY_WORKSPACE_CAPABILITIES.has(capability) : access === "write" ? capability === "writeFile" : capability === "execute")
     ) {
       return invalidBoundary(
         "workspace tool boundary capability must be a reviewed read operation",
@@ -167,11 +164,8 @@ function normalizeExecutionBoundary(value: unknown): ToolExecutionBoundary {
     }
     return Object.freeze({
       kind: "workspace",
-      access: "read",
-      capability: capability as Extract<
-        WorkspaceCapability,
-        "readFile" | "listFiles" | "diff" | "snapshot"
-      >,
+      access: access as "read" | "write" | "execute",
+      capability: capability as Exclude<WorkspaceCapability, "dispose">,
       root,
     });
   }

@@ -1,0 +1,34 @@
+id: m11-development-tools
+title: Five bounded canonical development tools
+goal: Deliver M11 exactly through the persisted-policy tool loop and migrate legacy model names.
+acceptance:
+  - Exactly fs.read, fs.list, fs.write, process.exec and git.diff are exposed
+  - Canonical audit names survive provider alias translation
+  - Invalid and out-of-scope operations fail before effects with typed evidence
+  - FakeModel edits an allowed fixture, tests it and obtains a bounded diff
+  - Full tests, typecheck and exit gate pass
+allowed_paths:
+  - packages/tools/**
+  - packages/models/**
+  - packages/kernel/**
+  - packages/workspace/**
+  - services/agent-server/**
+  - evals/**
+  - ROADMAP.md
+  - EVENTS.md
+  - SECURITY.md
+  - tasks/m11-development-tools.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "git *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 500
+delivery:
+  type: pull_request

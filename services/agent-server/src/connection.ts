@@ -76,7 +76,7 @@ export interface AgentConnectionOptions {
   defaultModel?: string;
   workspaceRoot?: string;
   tools?: (context: AgentSessionContext) => ToolRegistry;
-  /** Enables the built-in Docker-backed `sandbox_exec` tool for task sessions. */
+  /** Enables the built-in Docker-backed `process.exec` tool for task sessions. */
   sandbox?: AgentSandboxOptions;
   loadManifest?: (workspace: string, taskId: string) => Promise<TaskManifest>;
   /** Injected durable store (Postgres in production). `false` disables it. */

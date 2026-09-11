@@ -1,3 +1,5 @@
+import { inheritWorkspaceIsolation } from "./isolation";
+export { isIsolatedWorkspace } from "./isolation";
 /**
  * Workspace contracts.
  *
@@ -551,7 +553,7 @@ export function bindWorkspace(value: unknown): Workspace {
     }
   }
 
-  return Object.freeze({
+  const bound = Object.freeze({
     readFile: methods.readFile,
     writeFile: methods.writeFile,
     listFiles: methods.listFiles,
@@ -560,6 +562,8 @@ export function bindWorkspace(value: unknown): Workspace {
     snapshot: methods.snapshot,
     dispose: methods.dispose,
   }) as Workspace;
+  inheritWorkspaceIsolation(value, bound);
+  return bound;
 }
 
 /**
@@ -581,7 +585,7 @@ export function restrictWorkspace(
       `workspace view grants ${capability}, not ${operation}`,
     ));
 
-  return Object.freeze({
+  const view = Object.freeze({
     readFile: (path: string) => capability === "readFile"
       ? invokeWorkspaceOperation(bound, { operation: "readFile", path })
       : unsupported<string>("readFile"),
@@ -604,6 +608,8 @@ export function restrictWorkspace(
       ? invokeWorkspaceOperation(bound, { operation: "dispose" })
       : unsupported<void>("dispose"),
   });
+  inheritWorkspaceIsolation(bound, view);
+  return view;
 }
 
 function malformedResult(

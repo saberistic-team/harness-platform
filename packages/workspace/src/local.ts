@@ -1,4 +1,5 @@
-import { constants, openSync, closeSync, fstatSync, readSync, writeSync, ftruncateSync, lstatSync, realpathSync, readdirSync } from "node:fs";
+import { constants, openSync, closeSync, fstatSync, readSync, writeSync, fsyncSync, renameSync, unlinkSync, lstatSync, realpathSync, readdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { NodeCommandExecutor, type CommandExecutor } from "@harness/sandbox-runner";
 import { openWorkspace, type Workspace, type CommandRequest, type CommandResult } from "./index";
@@ -167,17 +168,31 @@ export class LocalWorkspace implements Workspace {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       existed = false;
     }
-    // Never truncate until all identity and link checks pass on the opened fd.
-    const fd = this.openFile(path, constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | (existed ? 0 : constants.O_CREAT | constants.O_EXCL), 0o600);
+    // Stage a complete sibling before publication: readers see old or new bytes,
+    // and a failed write never truncates the destination. Local remains trusted
+    // developer-only; Docker provides the hostile-process isolation boundary.
+    const temporary = `${path}.harness-${randomUUID()}`;
+    const fd = this.openFile(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, stat ? Number(stat.mode) & 0o777 : 0o600);
     try {
-      const opened = fstatSync(fd), nowParent = lstatSync(dirname(target));
-      if (!opened.isFile() || opened.nlink !== 1 || (stat && (stat.ino !== opened.ino || stat.dev !== opened.dev)) || parentStat.ino !== nowParent.ino || parentStat.dev !== nowParent.dev) fail("PATH_CHANGED", "write target changed");
-      this.checked(path);
       const data = Buffer.from(contents);
       let offset = 0;
       while (offset < data.length) offset += writeSync(fd, data, offset, data.length - offset, offset);
-      ftruncateSync(fd, data.length);
-    } finally { closeSync(fd); }
+      fsyncSync(fd);
+      const nowParent = lstatSync(dirname(target));
+      if (parentStat.ino !== nowParent.ino || parentStat.dev !== nowParent.dev) fail("PATH_CHANGED", "write parent changed");
+      this.checked(path);
+      if (existed) {
+        const current = lstatSync(target);
+        if (current.ino !== stat!.ino || current.dev !== stat!.dev || current.nlink !== 1) fail("PATH_CHANGED", "write target changed");
+      } else {
+        try { lstatSync(target); fail("PATH_CHANGED", "write target appeared"); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+      renameSync(this.checked(temporary), target);
+    } finally {
+      closeSync(fd);
+      try { unlinkSync(this.checked(temporary)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
   }
   async execute(value: CommandRequest): Promise<CommandResult> {
     this.active();

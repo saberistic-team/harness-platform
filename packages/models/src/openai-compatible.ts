@@ -832,6 +832,24 @@ export class OpenAICompatibleModel implements Model {
       rawTools as ToolDefinition[] | undefined,
       byteBudget,
     );
+    // Aliases exist only in this detached provider wire request. Audit/model ports
+    // retain canonical names, including prior assistant tool calls.
+    const aliases = new Map<string, string>();
+    const canonical = new Map<string, string>();
+    for (const tool of tools ?? []) {
+      const definition = tool.function as { name: string };
+      const name = definition.name;
+      const alias = /^[a-zA-Z0-9_-]+$/.test(name) ? name : `harness_${Buffer.from(name).toString("hex")}`;
+      if (alias.length > 64 || canonical.has(alias)) throw invalidRequest("tool alias collision or length overflow");
+      aliases.set(name, alias);
+      canonical.set(alias, name);
+      definition.name = alias;
+    }
+    for (const message of messages) {
+      if ("tool_calls" in message && Array.isArray(message.tool_calls)) {
+        for (const call of message.tool_calls) call.function.name = aliases.get(call.function.name) ?? call.function.name;
+      }
+    }
     const providerOptions = this.mapProviderOptions(
       rawProviderOptions as Record<string, unknown> | undefined,
       byteBudget,
@@ -914,7 +932,11 @@ export class OpenAICompatibleModel implements Model {
         body,
         controller.signal,
       );
-      return await Promise.race([operation, abortPromise]);
+      const response = await Promise.race([operation, abortPromise]);
+      return { ...response, toolCalls: response.toolCalls.map(call => {
+        if (call.name.startsWith("harness_") && !canonical.has(call.name)) throw new ModelProviderError("MODEL_INVALID_RESPONSE", "provider returned an unrecognized tool alias");
+        return { ...call, name: canonical.get(call.name) ?? call.name };
+      }) };
     } catch (cause) {
       if (cause instanceof ModelProviderError) throw cause;
       if (abortSource === "timeout") {

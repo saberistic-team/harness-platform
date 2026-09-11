@@ -984,7 +984,7 @@ describe("ACP WebSocket server", () => {
     }
   });
 
-  it("runs sandbox_exec end to end with one mirrored ACP run approval", async () => {
+  it("runs process.exec end to end with one mirrored ACP run approval", async () => {
     const root = mkdtempSync(join(tmpdir(), "harness-agent-sandbox-e2e-"));
     writeFileSync(join(root, "package.json"), "{}\n", "utf8");
     const executor = new FakeDockerExecutor();
@@ -998,7 +998,7 @@ describe("ACP WebSocket server", () => {
           {
             toolCalls: [{
               id: "sandbox-call-1",
-              name: "sandbox_exec",
+              name: "process.exec",
               arguments: { argv: ["node", "--version"] },
             }],
           },
@@ -1100,7 +1100,7 @@ describe("ACP WebSocket server", () => {
       const toolResult = streamed.find((event) => event.type === "tool.result");
       expect(toolResult).toMatchObject({
         data: {
-          tool: "sandbox_exec",
+          tool: "process.exec",
           ok: true,
           output: {
             ok: true,

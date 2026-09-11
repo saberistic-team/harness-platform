@@ -324,3 +324,10 @@ workspace state/output, never a running container. Docker command lifecycles
 continue to emit M3 `sandbox.started` and `sandbox.stopped`; ownership or cleanup
 failure remains a typed error. Callers connect `onEvent` to their audit sink.
 No file contents, argv values or credentials are placed in lifecycle events.
+
+
+M11 native model mutations (`fs.write`, `process.exec`) require the attested
+isolated Workspace. Local or forged workspaces fail before effects and persist
+`tool.result.error.code = WORKSPACE_ISOLATION_REQUIRED`. This removes the host
+path-check/rename race from the model capability surface; trusted developer
+LocalWorkspace APIs are not promoted into model mutation authority.

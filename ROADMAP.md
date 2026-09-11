@@ -608,7 +608,15 @@ it never keeps a live container. The image must contain Node 22+ and every
 required offline development dependency. Source worktrees must be sanitized of
 credentials; known credential paths are rejected before Docker is invoked.
 
-## M11 — Five bounded development tools (planned)
+## M11 — Five bounded development tools (implemented)
+
+Delivered by `tasks/m11-development-tools`. Model-driven `fs.write` and
+`process.exec` require an attested isolated `DockerWorkspace`; local or spoofed
+capabilities fail before effects with `WORKSPACE_ISOLATION_REQUIRED`.
+Read-only local inspection remains supported. Attestation survives trusted
+binding/restriction but is revoked when methods are replaced. The FakeModel
+edit/test/diff gate uses the isolated copied tree; local symlink, hard-link and
+parent-substitution fixtures prove mutation is refused without touching victims.
 
 Expose exactly these model capabilities through the persisted-policy tool
 loop:

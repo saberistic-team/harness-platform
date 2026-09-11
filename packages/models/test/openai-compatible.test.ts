@@ -914,3 +914,17 @@ describe("OpenAICompatibleModel", () => {
     expect(headers).toEqual({ "Content-Type": "application/json" });
   });
 });
+
+it("translates canonical dotted tools only at the provider boundary", async () => {
+  let wire: any;
+  const model = createModel(fakeFetch((_input, init) => {
+    wire = JSON.parse(String(init!.body));
+    return jsonResponse({ ...defaultCompletion, choices:[{index:0,finish_reason:"tool_calls",message:{role:"assistant",content:"",tool_calls:[{id:"next",type:"function",function:{name:wire.tools[0].function.name,arguments:'{"path":"x"}'}}]}}] });
+  }));
+  const request: CompletionRequest = { messages:[{role:"user",content:"read"},{role:"assistant",content:"",toolCalls:[{id:"old",name:"fs.read",arguments:{path:"x"}}]},{role:"tool",name:"fs.read",toolCallId:"old",content:"ok"}],tools:[{name:"fs.read",description:"read",inputSchema:{type:"object"}}] };
+  const result = await model.complete(request);
+  expect(wire.tools[0].function.name).toMatch(/^[a-zA-Z0-9_-]+$/);
+  expect(wire.messages[1].tool_calls[0].function.name).toBe(wire.tools[0].function.name);
+  expect(result.toolCalls[0]!.name).toBe("fs.read");
+  expect(request.tools![0]!.name).toBe("fs.read");
+});
