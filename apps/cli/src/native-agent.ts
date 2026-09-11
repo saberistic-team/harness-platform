@@ -65,8 +65,12 @@ export function createNativeTaskAgent(options: NativeAgentOptions): TaskAgent {
                     throw new NativeBuilderError("NATIVE_INPUT_TREE_UNAVAILABLE");
                 const paths = new Set([...tracked.stdout.split("\0").filter(Boolean), relative(input.cwd, input.manifestPath)]);
                 for (const path of paths) {
-                    if (path.startsWith("../") || path.startsWith("/") || path.startsWith("tasks/runs/"))
+                    if (path.startsWith("../") || path.startsWith("/"))
                         throw new NativeBuilderError("NATIVE_INPUT_PATH");
+                    // Reserved gate evidence is never source input, including a
+                    // tracked placeholder in an otherwise clean repository.
+                    if (path.startsWith("tasks/runs/"))
+                        continue;
                     const stat = lstatSync(join(input.cwd, path));
                     if (!stat.isFile() || stat.nlink !== 1)
                         throw new NativeBuilderError("NATIVE_INPUT_NONREGULAR");
