@@ -17,7 +17,6 @@ import {
   RunTerminalError,
   RuntimeBudgetExceededError,
   RuntimeConsumerError,
-  SteeringClosedError,
 } from "../src";
 import {
   FakeModel,
@@ -463,11 +462,12 @@ describe("MinimalAgentRuntime", () => {
     ]);
 
     const events = await collect(stream);
-    expect(events.map(({ type }) => type).slice(0, 5)).toEqual([
+    expect(events.map(({ type }) => type).slice(0, 6)).toEqual([
       "agent.started",
       "turn.started",
       "message.completed",
       "steering.queued",
+      "steering.applied",
       "model.request",
     ]);
     expect(model.requests[0]?.messages).toEqual([
@@ -476,7 +476,7 @@ describe("MinimalAgentRuntime", () => {
     ]);
   });
 
-  it("rejects steering after the sole M6 request boundary instead of silently orphaning it", async () => {
+  it("accepts steering after a model request boundary", async () => {
     const store = new RecordingEventStore();
     const runtime = new MinimalAgentRuntime();
     const iterator = runtime.run(
@@ -487,8 +487,8 @@ describe("MinimalAgentRuntime", () => {
     await iterator.next();
     await iterator.next();
     await expect(iterator.next()).resolves.toMatchObject({ value: { type: "model.request" } });
-    await expect(runtime.steer("run-1", "too late")).rejects.toBeInstanceOf(SteeringClosedError);
-    expect(store.events.some((event) => event.type === "steering.queued")).toBe(false);
+    await runtime.steer("run-1", "next boundary");
+    expect(store.events.some((event) => event.type === "steering.queued")).toBe(true);
     await iterator.return!();
   });
 
@@ -2109,7 +2109,7 @@ describe("M7 hardened boundary regressions", () => {
     expectOneTerminalOutcome(secondEvents, "completed");
   });
 
-  it("lets completion win when cancellation races the synchronous final-message ACK boundary", async () => {
+  it("lets cancellation win before the serialized completion boundary", async () => {
     const store = new RecordingEventStore();
     const runtime = new MinimalAgentRuntime();
     const iterator = runtime.run(makeInput(
@@ -2129,18 +2129,15 @@ describe("M7 hardened boundary regressions", () => {
     }
 
     const terminalPull = iterator.next();
-    await expect(runtime.cancel("run-1")).rejects.toMatchObject({
-      code: "RUNTIME_RUN_TERMINAL",
-      status: "completing",
-    });
+    await runtime.cancel("run-1");
     await expect(terminalPull).resolves.toMatchObject({
-      value: { type: "turn.completed", data: { status: "completed" } },
+      value: { type: "turn.completed", data: { status: "canceled" } },
     });
     await expect(iterator.next()).resolves.toMatchObject({
-      value: { type: "agent.stopped", data: { status: "completed" } },
+      value: { type: "agent.stopped", data: { status: "canceled" } },
     });
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
-    expectOneTerminalOutcome(store.events, "completed");
+    expectOneTerminalOutcome(store.events, "canceled");
   });
 });
 
@@ -2485,4 +2482,47 @@ describe("M8 workspace capability boundary", () => {
       });
     expectOneTerminalOutcome(events, "completed");
   });
+});
+
+it("M12 preserves concurrent steering in model and tool phases and immutable follow-up history", async () => {
+  const runtime = new MinimalAgentRuntime();
+  const store = new RecordingEventStore();
+  const modelEntered = gate(), releaseModel = gate(), toolEntered = gate(), releaseTool = gate();
+  const model = new FakeModel([{toolCalls:[{id:"one",name:"pause",arguments:{}}]},{content:"done"}]);
+  const adapter: ModelAdapter = {async *stream(request){
+    if (!model.requests.length) {modelEntered.release(); await releaseModel.promise;}
+    yield* model.stream(request);
+  }};
+  const tools = new ToolRegistry([createBoundedTool({name:"pause",description:"fixture",parameters:z.object({}),inputSchema:{type:"object"},execute:async()=>{toolEntered.release();await releaseTool.promise;return "ok";}},{kind:"pure"})]);
+  const running = collect(runtime.run(makeInput(adapter,store,{tools})));
+  await modelEntered.promise;
+  await Promise.all([runtime.steer("run-1","model A"),runtime.steer("run-1","model B")]);
+  releaseModel.release();
+  await toolEntered.promise;
+  expect(model.requests[0]!.messages.map(m=>m.content)).not.toContain("model A");
+  await Promise.all([runtime.steer("run-1","tool A"),runtime.steer("run-1","tool B")]);
+  releaseTool.release(); await running;
+  expect(model.requests[1]!.messages.slice(-4).map(m=>m.content)).toEqual(["model A","model B","tool A","tool B"]);
+  const original = JSON.stringify(store.events);
+  const next = new FakeModel([{content:"followed"}]);
+  await collect(runtime.run(makeInput(next,store,{runId:"run-2",turnId:"turn-2",input:"follow up",tools})));
+  expect(JSON.stringify(store.events.slice(0,JSON.parse(original).length))).toBe(original);
+  expect(next.requests[0]!.messages.slice(-2)).toEqual([{role:"assistant",content:"done",toolCalls:undefined},{role:"user",content:"follow up"}]);
+  expect(next.requests[0]!.messages.find(m=>m.role==="assistant" && m.toolCalls?.length)).toMatchObject({toolCalls:[{id:"one",name:"pause"}]});
+  expect(store.events.filter(e=>e.type==="turn.completed")).toHaveLength(2);
+});
+
+it("M12 acknowledges an already-appending steer before cancellation and rejects later steering", async () => {
+  const store = new RecordingEventStore({blockType:"steering.queued"});
+  const runtime = new MinimalAgentRuntime();
+  const iterator = runtime.run(makeInput(new HangingAdapter(),store))[Symbol.asyncIterator]();
+  await iterator.next(); await iterator.next(); await iterator.next(); await iterator.next();
+  const steering = runtime.steer("run-1","accepted");
+  await store.appendStarted.promise;
+  const cancel = runtime.cancel("run-1");
+  await expect(runtime.steer("run-1","late")).rejects.toBeInstanceOf(RunTerminalError);
+  store.releaseBlockedAppend(); await steering; await cancel;
+  expect(store.events.filter(e=>e.type==="steering.queued")).toHaveLength(1);
+  expectOneTerminalOutcome(store.events,"canceled");
+  await iterator.return!();
 });
