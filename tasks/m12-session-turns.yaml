@@ -1,0 +1,33 @@
+id: m12-session-turns
+title: FIFO steering and same-session follow-up turns
+goal: Extend M6/M7 steering to every safe model boundary and preserve prior turns.
+acceptance:
+  - Steering is append-acknowledged in concurrent FIFO order during model and tool phases
+  - Cancellation rejects later steering and accepted messages remain persisted
+  - Follow-up turns retain immutable prior messages and have exactly one terminal outcome
+  - Full offline tests, typecheck and exit gate pass
+allowed_paths:
+  - packages/tools/**
+  - packages/models/**
+  - packages/workspace/**
+  - services/agent-server/**
+  - tasks/m11-development-tools.yaml
+  - packages/kernel/**
+  - packages/events/**
+  - EVENTS.md
+  - ROADMAP.md
+  - tasks/m12-session-turns.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "git *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+budget:
+  max_model_tokens: 100000
+  max_tool_calls: 500
+delivery:
+  type: pull_request

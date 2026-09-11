@@ -48,6 +48,7 @@ Rules:
 | `turn.started`   | a caller-identified runtime turn is admitted | `runId`, `sessionId`, `turnId`, `inputMessageId` |
 | `message.delta`  | an ordered assistant-text chunk is durable | `runId`, `turnId`, `requestId`, `messageId`, `sequence`, `delta` |
 | `message.completed` | a complete user, assistant, or tool message is durable | `runId`, `turnId`, `messageId`, `role`, `content`, `stateVersion?`, `messageRevision?` |
+| `steering.applied` | FIFO messages incorporated at the next safe model boundary | `runId`, `sessionId`, `turnId`, `messageIds`, `messageRevision` |
 | `steering.queued` | an active run accepts a steering message | `runId`, `sessionId`, `turnId`, `messageId`, `content` |
 | `context.compacted` | a smaller replayable context replaces prior context | `runId`, `turnId`, `summaryMessageId`, `beforeMessages`, `afterMessages` |
 | `turn.completed` | one admitted turn reaches a terminal outcome | `runId`, `sessionId`, `turnId`, `status`, `modelRequests`, `toolCalls`, `usage?`, `stateVersion?`, `messageRevision?` |
@@ -160,17 +161,16 @@ carry the final state version, revision, cumulative usage, and a human-readable
 note. These fields are additive so legacy event payloads remain
 valid.
 
-`steering.queued` is appended before `steer()` resolves and its `messageId`
-becomes the durable identity used when the queued content enters context at the
-first model boundary. A steering call that linearizes after that boundary is
-rejected with a typed error instead of persisting content that cannot be
-consumed. Steering an unknown or terminal run is also a typed error. Canceling
-an active run is idempotent; abandoning its
-iterator has the same cancellation semantics and still durably terminates the
-turn, even though the abandoning consumer cannot receive that final event. A
-failed terminal append rejects cancellation or abandonment with the typed store
-error. Repeating cancellation of an already canceled run is a no-op, while
-other unknown or terminal identities remain typed errors.
+`steering.queued` is appended before `steer()` resolves. Appends serialize in
+invocation order, and `steering.applied` records their incorporation only at a
+safe model-request boundary. In-flight requests are immutable. Accepted
+steering during a final response produces another round. Cancellation becomes
+visible synchronously: later steering rejects; a steering append already in
+progress finishes and remains in history even if cancellation wins. Completion
+wins only at its serialized terminal boundary. Exactly one terminal outcome is
+published. A new run/turn on the same session inherits messages, pending steering
+and cumulative usage; concurrent turns and replacing prior context are rejected.
+M14 adds cross-process storage and reconstruction.
 
 `context.compacted` contains the durable summary text and its message identity,
 not only telemetry. It must reduce the message count; token counts are optional

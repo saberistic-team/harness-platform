@@ -327,7 +327,6 @@ interface RuntimeRunState {
   toolTranscriptBytes: number;
   agentId?: string;
   terminalPublished: boolean;
-  steeringOpen: boolean;
   appendTail: Promise<void>;
   appendFailure?: EventAppendError;
   failure?: AgentRuntimeError;
@@ -1117,9 +1116,19 @@ function equalToolJson(left: unknown, right: unknown): boolean {
  */
 export class MinimalAgentRuntime implements AgentRuntime {
   private readonly runs = new Map<string, RuntimeRunState | RunTombstone>();
+  private readonly sessions = new Map<string, { runId: string; turns: Set<string>; messages: VersionedMessageState; pending: SteeringMessage[]; usage: Usage; store: EventStore }>();
 
   run(input: RunInput): AsyncIterable<AgentEvent> {
-    const snapshot = snapshotRunInput(input);
+    if (this.runs.has(input.runId)) throw new RunAlreadyExistsError(input.runId);
+    const prior = this.sessions.get(input.sessionId);
+    if (prior) {
+      const run = this.runs.get(prior.runId);
+      if (run?.kind === "live") throw new InvalidRunInputError("session already has an active turn");
+      if (prior.turns.has(input.turnId)) throw new InvalidRunInputError("turnId already exists in session");
+      if (input.context !== undefined) throw new InvalidRunInputError("follow-up cannot replace prior context");
+      if (input.eventStore !== prior.store) throw new InvalidRunInputError("follow-up must use the session EventStore");
+    }
+    const snapshot = snapshotRunInput(prior ? { ...input, context: prior.messages.messages } : input);
     if (this.runs.has(snapshot.runId)) throw new RunAlreadyExistsError(snapshot.runId);
     const toolDefinitions = snapshotToolDefinitions(
       snapshot.tools,
@@ -1134,7 +1143,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
       finished: deferred<void>(),
       deliveries: [],
       acknowledgements: new Set(),
-      pendingSteering: [],
+      pendingSteering: prior ? [...prior.pending] : [],
       runPermissionGrants: new Set(),
       warnedBudgets: new Set(),
       seenModelCallIds: new Set(),
@@ -1146,17 +1155,18 @@ export class MinimalAgentRuntime implements AgentRuntime {
       producerFinished: false,
       modelRequests: 0,
       toolCalls: 0,
-      usage: emptyUsage(),
+      usage: prior?.usage ?? emptyUsage(),
       messageState: createMessageState(snapshot.context),
       toolTranscriptBytes: 0,
       terminalPublished: false,
-      steeringOpen: true,
       appendTail: Promise.resolve(),
     };
     // These promises are intentionally observed here so a caller that delays
     // iteration or steering never causes an unhandled rejection.
     void state.admitted.promise.catch(() => undefined);
     this.runs.set(snapshot.runId, state);
+    const turns = new Set(prior?.turns ?? []); turns.add(snapshot.turnId);
+    this.sessions.set(snapshot.sessionId, {runId:snapshot.runId, turns, messages:state.messageState, pending:[], usage:state.usage, store:input.eventStore});
 
     if (snapshot.signal) {
       const onAbort = () => {
@@ -1188,6 +1198,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
         state.admitted.reject(failure);
         state.finished.resolve(undefined);
         this.runs.delete(snapshot.runId);
+        this.sessions.delete(snapshot.sessionId);
         this.wake(state);
         throw failure;
       }
@@ -1246,7 +1257,6 @@ export class MinimalAgentRuntime implements AgentRuntime {
 
     await this.serialize(state, async () => {
       this.assertControllable(state);
-      if (!state.steeringOpen) throw new SteeringClosedError(state.input.runId);
       if (state.pendingSteering.length >= MAX_STEERING_MESSAGES) {
         throw new InvalidRunInputError(`a run may queue at most ${MAX_STEERING_MESSAGES} steering messages`);
       }
@@ -1802,13 +1812,21 @@ export class MinimalAgentRuntime implements AgentRuntime {
 
     await this.serialize(state, async () => {
       this.assertMayProduce(state);
-      state.steeringOpen = false;
       const steeringCount = state.pendingSteering.length;
       for (const steering of state.pendingSteering.slice(0, steeringCount)) {
         state.messageState = appendMessage(state.messageState, {
           role: "user",
           content: steering.content,
         });
+      }
+      if (steeringCount > 0) {
+        const applied = createEvent("steering.applied", {
+          runId:state.input.runId, sessionId:state.input.sessionId, turnId:state.input.turnId,
+          messageIds:state.pendingSteering.slice(0,steeringCount).map(message=>message.messageId),
+          messageRevision:state.messageState.revision,
+        }, this.eventOptions(state));
+        await this.appendRaw(state, applied);
+        this.enqueue(state, {event:applied});
       }
       requestContext = buildModelContext(state.messageState, toolDefinitions);
       requestEvent = createEvent("model.request", {
@@ -2055,11 +2073,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
       finishReason: completed.finishReason,
       stateVersion: state.messageState.version,
       messageRevision: state.messageState.revision,
-    }, this.eventOptions(state)), false, completed.finishReason === "tool_calls"
-      ? undefined
-      : () => {
-          state.status = "completing";
-        });
+    }, this.eventOptions(state)));
 
     return { requestId, outputMessageId, response: completed };
   }
@@ -2539,7 +2553,16 @@ export class MinimalAgentRuntime implements AgentRuntime {
         throw new ModelStreamError("model returned an error finish reason");
       }
       if (round.response.finishReason === "stop") {
-        return round.outputMessageId;
+        // The append queue orders final completion after all previously accepted
+        // steering. Messages accepted during a final response get another round.
+        let finish = false;
+        await this.serialize(state, async () => {
+          this.assertMayProduce(state);
+          finish = state.pendingSteering.length === 0;
+          if (finish) state.status = "completing";
+        });
+        if (finish) return round.outputMessageId;
+        continue;
       }
       for (const call of round.response.toolCalls) {
         await this.processToolCall(state, round.requestId, call);
@@ -2649,6 +2672,8 @@ export class MinimalAgentRuntime implements AgentRuntime {
         state.status === "budget_exceeded"
           ? state.status
           : "failed";
+      const session = this.sessions.get(state.input.sessionId);
+      if (session) { session.messages = state.messageState; session.pending = [...state.pendingSteering]; session.usage = state.usage; }
       this.runs.set(state.input.runId, {
         kind: "terminal",
         runId: state.input.runId,

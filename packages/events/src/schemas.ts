@@ -194,6 +194,13 @@ export const steeringQueued = envelope(
   }),
 );
 
+/** FIFO steering incorporated atomically at a safe model boundary. */
+export const steeringApplied = envelope("steering.applied", z.object({
+  ...runtimeIdentity,
+  messageIds: z.array(id).min(1).max(128),
+  messageRevision: eventCount,
+}).strict());
+
 /** A compacted context snapshot that is sufficient for durable replay. */
 export const contextCompacted = envelope(
   "context.compacted",
@@ -596,6 +603,7 @@ export const eventSchemas = {
   "message.delta": messageDelta,
   "message.completed": messageCompleted,
   "steering.queued": steeringQueued,
+  "steering.applied": steeringApplied,
   "context.compacted": contextCompacted,
   "turn.completed": turnCompleted,
   "model.request": modelRequest,

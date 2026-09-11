@@ -639,7 +639,10 @@ diffs, snapshots, time, and cancellation are bounded.
 returns a bounded diff through the five tools; each invalid or out-of-scope
 attempt has no side effect and leaves typed evidence.
 
-## M12 — Steering and follow-up turns (planned)
+## M12 — Steering and follow-up turns (implemented)
+
+Delivered by `tasks/m12-session-turns`; deterministic model/tool phase, FIFO,
+cancellation-race and immutable follow-up tests exercise the gate.
 
 Extend the M6/M7 active-run registry beyond its current first-boundary
 steering behavior. Steering messages are append-acknowledged through the
