@@ -1,3 +1,7 @@
+import { NativeBuilderError } from "./native-error";
+import type { KeyObject } from "node:crypto";
+import { isNativeTaskAgent, nativeRunEvidence } from "./native-agent";
+import { canonical, digest, persistNativeArtifacts, builderSourceRevision, applyNativePatch, recordNativeAttestation, sealNativeReport, captureGeneratedTree } from "./native-attestation";
 import {
   spawn as spawnProcess,
   type ChildProcessWithoutNullStreams,
@@ -81,6 +85,8 @@ export interface RunArgs {
   prUrl?: string;
   /** Present only for `harness bootstrap`; ordinary `run` gates existing work. */
   builder?: TaskBuilderConfig;
+  /** Trusted gate signing key; never passed to the model or workspace. */
+  nativeSigningKey?: KeyObject;
   /** Test seam; production uses the atomic same-directory report writer. */
   reportWriter?: (path: string, value: unknown) => void | Promise<void>;
 }
@@ -1022,6 +1028,12 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
       ...(options.postTest?.policyPaths ?? []),
     ]);
     const violations = unique(options.violations ?? []);
+    const attestation = builderEvidence?.nativeAttestation;
+    if (status === "passed" && attestation) {
+      try {
+        if(captureGeneratedTree(cwd,attestation.inputBaseSha,allPaths)!==attestation.generatedTree)throw Error("tests changed the attested generated tree");
+      } catch(error) {status="blocked";addFailure({stage:"evidence",code:"NATIVE_TREE_CHANGED",message:errorMessage(error)});}
+    }
 
     const buildReport = (
       reportPath: string,
@@ -1085,7 +1097,7 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
               : status === "passed"
                 ? { pullRequest: `branch: ${gitEvidence.expectedBranch}` }
                 : {}),
-            artifacts: persisted ? [DB_RELATIVE_PATH] : [],
+            artifacts: persisted ? [DB_RELATIVE_PATH,...(builderEvidence?.nativeAttestation?[builderEvidence.nativeAttestation.patchPath,builderEvidence.nativeAttestation.eventLogPath,builderEvidence.nativeAttestation.workspaceLogPath]:[])] : [],
             reportPath,
             ...(persisted ? { sessionId } : {}),
             reportWritten: includeReceipt,
@@ -1114,6 +1126,8 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
     let reportWritten = false;
     try {
       ensureEvidenceDirectories(cwd);
+      if(builderEvidence?.nativeAttestation)persistNativeArtifacts(builderEvidence.nativeAttestation,cwd);
+      built.report = sealNativeReport(built.report, args.nativeSigningKey);
       await commitReport(reportPath, built.report);
       reportWritten = true;
     } catch (error) {
@@ -1127,7 +1141,8 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
       try {
         reportPath = fallbackReportPath(normalReportPath);
         built = buildReport(reportPath, includeDetails, true);
-        await commitReport(reportPath, built.report);
+        built.report = sealNativeReport(built.report, args.nativeSigningKey);
+      await commitReport(reportPath, built.report);
         reportWritten = true;
       } catch (fallbackError) {
         const fallbackFailure: RunReportFailure = {
@@ -1155,6 +1170,11 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
   };
 
   if (args.builder) {
+    const native = isNativeTaskAgent(args.builder.agent);
+    const manifestControl = `tasks/${manifest.id}.yaml`;
+    if(native && initialSnapshot.policyPaths.some(path=>path!==manifestControl)) {
+      return finishRun({status:"blocked",preTest:initialSnapshot,failure:{stage:"builder",code:"NATIVE_PREAUTHORED_INPUT",message:"native authorship requires a clean base with only the manifest control overlay"}});
+    }
     const initialViolations = evaluateScope(initialSnapshot, "pre-builder");
     if (initialViolations.length > 0) {
       return finishRun({
@@ -1270,6 +1290,10 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
       }, eventOptions()));
     }
 
+    const sourceRevision = native ? builderSourceRevision() : undefined;
+    const manifestDigest = native ? digest(readFileSync(manifestFile)) : undefined;
+    const preBuilderSnapshot = structuredClone(initialSnapshot);
+    const preBuilderTree = native ? captureGeneratedTree(cwd,gitEvidence.headSha,initialSnapshot.policyPaths) : undefined;
     const builderStarted = Date.now();
     let builderFailure: RunReportFailure | undefined;
     let builderFailureStatus: RunReport["status"] = "failed";
@@ -1281,18 +1305,33 @@ export async function runTask(args: RunArgs): Promise<RunOutcome> {
         branch: gitEvidence.expectedBranch,
         prompt: builderPrompt(manifest, gitEvidence.expectedBranch),
         timeoutMs: builderTimeoutMs,
+        approvedWrite: args.builder.approveWrite === true,
         budget: manifest.budget,
       });
+      let nativeAttestation: RunReportBuilder["nativeAttestation"];
+      if(native) {
+        const evidence=nativeRunEvidence(args.builder.agent,result);
+        if(builderSourceRevision()!==sourceRevision || digest(readFileSync(manifestFile))!==manifestDigest)throw new NativeBuilderError("NATIVE_CONTROL_INPUT_CHANGED");
+        const beforeApply=collectGitChangeSnapshot(cwd,gitEvidence);
+        if(JSON.stringify(beforeApply)!==JSON.stringify(initialSnapshot) || captureGeneratedTree(cwd,gitEvidence.headSha,beforeApply.policyPaths)!==preBuilderTree)throw new NativeBuilderError("NATIVE_HOST_CHANGED_DURING_RUN");
+        applyNativePatch(cwd,evidence.patch);
+        const generated=collectGitChangeSnapshot(cwd,gitEvidence);
+        if(generated.policyPaths.some(path=>!pathAllowed(manifest.allowed_paths,path)))throw new NativeBuilderError("NATIVE_GENERATED_SCOPE_VIOLATION");
+        if(digest(readFileSync(manifestFile))!==manifestDigest)throw new NativeBuilderError("NATIVE_MANIFEST_OVERLAY_CHANGED");
+        nativeAttestation=recordNativeAttestation(cwd,manifestFile,gitEvidence.headSha,sourceRevision!,evidence,preBuilderSnapshot,generated,preBuilderTree!);
+        push(createEvent("builder.attested",{taskId:manifest.id,runId,sessionId,nativeRunId:evidence.runId,attestationDigest:digest(canonical(nativeAttestation)),version:"native-builder/v1"},eventOptions()));
+      }
       modelUsage = result.modelUsage;
       builderEvidence = {
         name: result.name,
+        ...(nativeAttestation?{nativeAttestation}:{}),
         ok: true,
         durationMs: Date.now() - builderStarted,
         exitCode: 0,
         outputTail: boundedTail(result.finalText ?? ""),
       };
     } catch (error) {
-      const code = error instanceof PiAgentError ? error.code : "BUILDER_FAILED";
+      const code = error instanceof PiAgentError || error instanceof NativeBuilderError ? error.code : "BUILDER_FAILED";
       const message = errorMessage(error);
       if (error instanceof PiAgentError && error.budget) {
         push(createEvent("budget.warning", {

@@ -36,6 +36,8 @@ function samples(): Array<{ type: EventType; event: AnyHarnessEvent }> {
     { type:"context.checkpoint", event:createEvent("context.checkpoint",{runId:"run-1",sessionId:"sess-1",turnId:"turn-1",version:1,summary:"summary",tailStart:2,throughRevision:3,tail:[{role:"user",content:"tail"}]},opts)},
     { type:"context.accounted", event:createEvent("context.accounted",{runId:"run-1",sessionId:"sess-1",turnId:"turn-1",requestId:"req-1",occupancyTokens:100,windowTokens:1000,reserveTokens:50,algorithm:"utf8-upper-bound/v1",summaryRequest:false},opts)},
     { type:"runtime.checkpoint", event:createEvent("runtime.checkpoint",{runId:"run-1",sessionId:"sess-1",turnId:"turn-1",version:1,payload:{version:1}},opts)},
+    { type:"runtime.continued",event:createEvent("runtime.continued",{runId:"run-1",sessionId:"sess-1",turnId:"turn-1",checkpointRevision:1,ownerId:"owner-2"},opts)},
+    { type:"builder.attested",event:createEvent("builder.attested",{taskId:"task-1",runId:"run-1",sessionId:"sess-1",nativeRunId:"native-1",attestationDigest:"a".repeat(64),version:"native-builder/v1"},opts)},
     { type: "turn.completed", event: createEvent("turn.completed", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", status: "completed", outputMessageId: "msg-assistant-1", modelRequests: 1, toolCalls: 0, usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 }, stateVersion: 1, messageRevision: 2, note: "finished" }, opts) },
     { type: "model.request", event: createEvent("model.request", { requestId: "req-1", model: "fake-model/v1", messageCount: 2, runId: "run-1", sessionId: "sess-1", turnId: "turn-1", step: 1, contextVersion: 1, messageRevision: 1 }, opts) },
     {

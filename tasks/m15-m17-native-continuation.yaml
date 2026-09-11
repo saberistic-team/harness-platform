@@ -1,0 +1,33 @@
+id: m15-m17-native-continuation
+title: Restart-safe native builder and authorship evidence
+goal: Implement M15 restart-safe continuation, M16 offline native TaskAgent, and M17 verified authorship evidence.
+acceptance:
+  - Fenced continuation executes only committed safe boundaries and refuses uncertain effects
+  - Offline native TaskAgent uses isolated workspace and five development tools without Pi
+  - Authorship evidence binds clean input and generated output and rejects seeded changes
+  - Offline tests, typecheck and exit gate pass
+allowed_paths:
+  - packages/kernel/**
+  - packages/sessions/**
+  - packages/events/**
+  - packages/sdk/**
+  - packages/workspace/**
+  - apps/cli/**
+  - skills/platform-builder/**
+  - EVENTS.md
+  - ROADMAP.md
+  - tasks/m15-m17-native-continuation.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "git *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+budget:
+  max_model_tokens: 200000
+  max_tool_calls: 1000
+delivery:
+  type: pull_request

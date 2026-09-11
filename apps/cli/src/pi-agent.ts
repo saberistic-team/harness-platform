@@ -14,6 +14,8 @@ export interface TaskAgentInput {
   branch: string;
   prompt: string;
   timeoutMs: number;
+  /** Explicit fs.write approval already resolved by the trusted gate. */
+  approvedWrite?: boolean;
   budget?: TaskManifest["budget"];
 }
 

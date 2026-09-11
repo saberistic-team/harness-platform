@@ -6,6 +6,8 @@ import {
 } from "@harness/events";
 import {
   MAX_EVENT_PAGE_LIMIT,
+  assertContinuation,
+  type ContinueSessionOptions,
   assertAppendOwnership,
   assertRecoveryLeaseExpired,
   assertOwnerId,
@@ -818,6 +820,22 @@ export class PostgresSessionStore implements SessionStore {
         payload: decodeSessionJson(payload, "session checkpoint"),
         updatedAt,
       };
+    });
+  }
+
+  async continueSession(sessionId: string, options: ContinueSessionOptions): Promise<SessionCheckpoint> {
+    this.assertOpen(); assertSessionId(sessionId);
+    const canonical = canonicalEvent(options.event);
+    return this.transactions.run(async tx => {
+      const row = await lockSession(tx, sessionId);
+      const record = recordFromRow(row, sessionId);
+      const checkpoint = checkpointFromRow(row, sessionId);
+      assertContinuation(record, checkpoint, asSafeInteger(row.next_seq, "next_seq"), options, await this.storageTime(tx));
+      const continued = await appendWithLockedSession(tx, row, sessionId, canonical, undefined);
+      await tx.query(`/* sessions:continue-owner */ UPDATE harness_sessions SET metadata = $1 WHERE session_id = $2`,
+        [encodeMetadata({...record.metadata, ownerId:options.ownerId, leaseExpiresAt:options.leaseExpiresAt}), sessionId]);
+      await tx.query(`/* sessions:continue-checkpoint */ UPDATE harness_sessions SET checkpoint_revision = $1, checkpoint_seq = $2 WHERE session_id = $3`, [checkpoint.revision+1,continued.seq,sessionId]);
+      return {...checkpoint,revision:checkpoint.revision+1,afterSeq:continued.seq};
     });
   }
 

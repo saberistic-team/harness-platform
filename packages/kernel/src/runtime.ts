@@ -100,6 +100,8 @@ export interface Tool {
 export interface EventStore {
   /** Durable adapters opt into full versioned checkpoint emission. */
   readonly checkpointVersion?: 1;
+  markInterrupted?(): Promise<void>;
+  claimContinuation?(identity: {runId:string;sessionId:string;turnId:string}): Promise<{payload:unknown}>;
   loadCheckpoint?(): Promise<{payload:unknown}|undefined>;
   append(event: AgentEvent): Promise<void>;
   readSession(sessionId: string): AsyncIterable<AgentEvent>;
@@ -335,6 +337,7 @@ interface RuntimeRunState {
   compaction?: CompactionState;
   toolTranscriptBytes: number;
   agentId?: string;
+  workspaceSnapshot?: string;
   terminalPublished: boolean;
   appendTail: Promise<void>;
   appendFailure?: EventAppendError;
@@ -1164,6 +1167,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
   private checkpoint(state:RuntimeRunState, phase:RuntimeCheckpoint["phase"], nextRequest?:ModelRequest, terminalStatus?:TerminalTurnStatus): RuntimeCheckpoint {
     const {signal:_signal,...request}=nextRequest??{};
     return parseRuntimeCheckpoint({version:1,runId:state.input.runId,sessionId:state.input.sessionId,turnId:state.input.turnId,phase,
+      agentId:state.agentId,workspaceSnapshot:state.workspaceSnapshot,toolDefinitions:[...state.toolDefinitions],
       terminalStatus,messageState:state.messageState,model:state.input.model,usage:state.usage,
       modelRequests:state.modelRequests,toolCalls:state.toolCalls,toolTranscriptBytes:state.toolTranscriptBytes,
       seenModelCallIds:[...state.seenModelCallIds],runPermissionGrants:[...state.runPermissionGrants],warnedBudgets:[...state.warnedBudgets],
@@ -1175,6 +1179,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
 
   private async persistCheckpoint(state:RuntimeRunState, phase:RuntimeCheckpoint["phase"], nextRequest?:ModelRequest, terminalStatus?:TerminalTurnStatus): Promise<void> {
     if(state.input.eventStore.checkpointVersion!==1)return;
+    if(phase==="safe" && state.input.workspace)state.workspaceSnapshot=(await state.input.workspace.snapshot()).id;
     await this.serialize(state,async()=>{
       const checkpoint=this.checkpoint(state,phase,nextRequest,terminalStatus);
       const event=createEvent("runtime.checkpoint",{runId:state.input.runId,sessionId:state.input.sessionId,turnId:state.input.turnId,version:1,payload:checkpoint as unknown as Record<string,unknown>},this.eventOptions(state));
@@ -1183,7 +1188,33 @@ export class MinimalAgentRuntime implements AgentRuntime {
     });
   }
 
-  run(input: RunInput): AsyncIterable<AgentEvent> {
+  async continue(input: RunInput): Promise<AsyncIterable<AgentEvent>> {
+    assertRunInput(input);
+    if (this.runs.has(input.runId) || this.sessions.has(input.sessionId)) throw new RunAlreadyExistsError(input.runId);
+    if (!input.eventStore.claimContinuation || !input.eventStore.loadCheckpoint) throw new InvalidRunInputError("continuation requires a fenced durable EventStore");
+    const durable = await input.eventStore.loadCheckpoint();
+    if(!durable){await input.eventStore.markInterrupted?.();throw new RuntimeCheckpointError("RUNTIME_CHECKPOINT_INTERRUPTED","no committed checkpoint");}
+    const cp = parseRuntimeCheckpoint(durable.payload);
+    if (cp.runId !== input.runId || cp.sessionId !== input.sessionId || cp.turnId !== input.turnId || cp.model !== input.model)
+      throw new RuntimeCheckpointError("RUNTIME_CHECKPOINT_INVALID", "continuation identity mismatch");
+    if(cp.phase !== "safe") {
+      if(cp.phase !== "terminal") await input.eventStore.markInterrupted?.();
+      throw new RuntimeCheckpointError("RUNTIME_CHECKPOINT_INTERRUPTED", "continuation requires the matching safe checkpoint");
+    }
+    // Validate executable capabilities before consuming the fenced checkpoint.
+    snapshotRunInput(input);
+    if(JSON.stringify(cp.toolDefinitions)!==JSON.stringify(snapshotToolDefinitions(input.tools,input.workspace!==undefined)))throw new InvalidRunInputError("continuation tool definitions changed");
+    if(cp.workspaceSnapshot !== (input.workspace ? (await input.workspace.snapshot()).id : undefined))throw new InvalidRunInputError("continuation workspace snapshot changed");
+    let claimed:RuntimeCheckpoint;
+    try {claimed = parseRuntimeCheckpoint((await input.eventStore.claimContinuation({runId:input.runId,sessionId:input.sessionId,turnId:input.turnId})).payload);}
+    catch(error) {await input.eventStore.markInterrupted?.();throw error;}
+    if (JSON.stringify(claimed) !== JSON.stringify(cp)) throw new RuntimeCheckpointError("RUNTIME_CHECKPOINT_INVALID", "checkpoint changed during claim");
+    return this.startRun({...input, ...cp.settings, budget:cp.budget, contextPolicy:cp.contextPolicy, context:cp.messageState.messages}, cp);
+  }
+
+  run(input: RunInput): AsyncIterable<AgentEvent> { return this.startRun(input); }
+
+  private startRun(input: RunInput, continuation?: RuntimeCheckpoint): AsyncIterable<AgentEvent> {
     if (this.runs.has(input.runId)) throw new RunAlreadyExistsError(input.runId);
     const prior = this.sessions.get(input.sessionId);
     if (prior) {
@@ -1274,7 +1305,22 @@ export class MinimalAgentRuntime implements AgentRuntime {
       }
     }
 
-    void this.produce(state).catch((error: unknown) => {
+    if (continuation) {
+      state.agentId = continuation.agentId;
+      state.workspaceSnapshot = continuation.workspaceSnapshot;
+      state.messageState = continuation.messageState;
+      state.usage = continuation.usage;
+      state.modelRequests = continuation.modelRequests;
+      state.toolCalls = continuation.toolCalls;
+      state.toolTranscriptBytes = continuation.toolTranscriptBytes;
+      state.compaction = continuation.compaction;
+      for (const id of continuation.seenModelCallIds) state.seenModelCallIds.add(id);
+      for (const grant of continuation.runPermissionGrants) state.runPermissionGrants.add(grant);
+      for (const metric of continuation.warnedBudgets) state.warnedBudgets.add(metric as RuntimeBudgetMetric);
+      state.pendingSteering.push(...continuation.pendingSteering);
+      this.sessions.get(input.sessionId)!.turns = new Set(continuation.sessionTurns);
+    }
+    void this.produce(state, continuation !== undefined).catch((error: unknown) => {
       this.containEscapedProducerFailure(state, error);
     });
     return this.iterableFor(state);
@@ -2647,6 +2693,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
 
   private async runRounds(state: RuntimeRunState): Promise<string> {
     while (true) {
+      await this.persistCheckpoint(state, "safe");
       const round = await this.requestModelRound(state);
       const tokenLimit = state.input.budget?.maxModelTokens;
       if (tokenLimit !== undefined) {
@@ -2705,8 +2752,9 @@ export class MinimalAgentRuntime implements AgentRuntime {
     }
   }
 
-  private async produce(state: RuntimeRunState): Promise<void> {
+  private async produce(state: RuntimeRunState, continuation = false): Promise<void> {
     try {
+      if (!continuation) {
       state.agentId = this.newId(state, "agent");
       const agentStarted = createEvent("agent.started", {
         agentId: state.agentId,
@@ -2762,6 +2810,11 @@ export class MinimalAgentRuntime implements AgentRuntime {
       await userAck.promise;
       this.assertMayProduce(state);
 
+      } else {
+        state.status = "active";
+        state.admitted.resolve(undefined);
+        this.assertMayProduce(state);
+      }
       const outputMessageId = await this.runRounds(state);
 
       // Completion wins synchronously after the final backpressure boundary.

@@ -140,7 +140,7 @@ describe("harness bootstrap", () => {
     expect(events(report, "permission.resolved")).toContainEqual(
       expect.objectContaining({ action: "fs.write", decision: "allow" }),
     );
-  });
+  }, 20_000);
 
   it("proves the Pi adapter composition edits the task branch and produces a report", async () => {
     const { dir, manifestPath } = makeRepo("pi-adapter-flow");

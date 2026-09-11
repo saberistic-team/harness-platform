@@ -52,8 +52,62 @@ harness to build the harness).
 3. Work on `tasks/<id>`, only inside `allowed_paths`.
 4. Green tests, then run the exit gate:
    `pnpm harness run tasks/<id>.yaml`.
-5. The structured report (run-report/v1) is the PR's evidence — attach
-   it, do not paraphrase it.
+5. Attach the current `run-report/v2` report and its patch/event artifacts
+   as PR evidence. `run-report/v1` is legacy read-only data, never acceptable
+   evidence for a new task.
+
+## Native builder path (M15–M17)
+
+`harness bootstrap tasks/<id>.yaml --native-image <image@sha256:digest>`
+uses the exact `MinimalAgentRuntime` TaskAgent entrypoint. `HARNESS_NATIVE_IMAGE`
+can supply the pinned image. Missing Docker/image configuration fails closed;
+there is no local execution fallback. The default model is deterministic
+FakeModel; injected reviewed model adapters use the same kernel. The offline
+integration test supplies a deterministic Docker protocol executor. It does not
+claim a live provider or Docker deployment gate.
+
+The trusted CLI validates the canonical manifest, selects or creates exactly
+`tasks/<id>`, checks pre/post scope, applies the sandbox patch, runs tests, and
+writes the report. The model has only `fs.read`, `fs.list`, `fs.write`,
+`process.exec`, and `git.diff`. It has no branch or commit tool. Resolve an
+`fs.write: ask` with `--approve-write`; other unresolved asks remain denied.
+The explicit `--pi-bin` option retains the legacy adapter for compatibility;
+its free-form builder name cannot produce native authorship evidence.
+
+Start native authorship from a clean base. The sole permitted pre-existing
+change is `tasks/<id>.yaml`, whose immutable bytes are the manifest control
+input. Pre-authored source, including staged and committed task changes, must
+return to a clean input rather than being claimed by the builder. Generated
+scope and tree are rechecked after tests.
+
+Native reports include `native-builder/v1`, pre/post Git snapshots, a
+content-addressed builder source revision (platform TypeScript sources and
+lockfile), pinned image, manifest digest, input base, workspace snapshots,
+model/session/run identities, and patch/event digests. They carry an Ed25519
+seal over the whole v2 report. For portable PR/CI evidence, give the trusted
+CLI `--native-signing-key <private.pem>` outside the sandbox. Without it the
+process uses an ephemeral local key; its public key must be pinned separately
+before verification. Never establish CI trust from the key inside a report.
+
+Verify the candidate and accepted result with:
+
+```
+pnpm harness verify-native <report.json> --trusted-key <public.pem> --candidate <commit> --accepted <commit> --accepted-base <commit>
+```
+
+The candidate must equal the generated tree. Accepted merge/squash/rebase
+output must have the exact attested patch relative to its trusted input base.
+Archive the returned `native-acceptance/v1` binding with CI evidence. Human
+conflict edits return the task to the builder. This mechanism qualifies the
+path for M18; M17 is not a qualified self-hosted builder and does not activate
+the ratchet.
+
+For restart, `MinimalAgentRuntime.continue` requires a durable safe checkpoint,
+unchanged tool definitions and workspace snapshot, and an expired owner lease.
+SQLite/Postgres atomically fence the old owner and claim the safe cursor.
+Original run/turn identities and counters survive. Any uncertain segment is
+recorded interrupted and cannot execute again automatically. A new follow-up
+after a completed turn uses `restoreSession` and a fresh run/turn identity.
 
 ## Gotchas
 
