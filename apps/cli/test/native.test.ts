@@ -17,9 +17,11 @@ function fixture() {
     git(root, "config", "user.name", "Test");
     git(root, "config", "commit.gpgsign", "false");
     writeFileSync(join(root, "fixture.txt"), "old\n");
+    mkdirSync(join(root, "tasks/runs"), { recursive: true });
+    writeFileSync(join(root, "tasks/runs/.gitkeep"), "");
+    writeFileSync(join(root, "tasks/runs/prior-report.json"), '{"reserved":"evidence"}\n');
     git(root, "add", ".");
     git(root, "commit", "-qm", "base");
-    mkdirSync(join(root, "tasks"));
     writeFileSync(join(root, "tasks/native.yaml"), `id: native\ntitle: Native fixture\ngoal: Edit fixture\nacceptance:\n  - fixture is new\nallowed_paths:\n  - fixture.txt\n  - tasks/native.yaml\npermissions:\n  fs.read: allow\n  fs.write: allow\n  process.exec: allow\n  git.diff: allow\n  network: deny\ndelivery:\n  type: none\n`);
     return root;
 }
@@ -39,6 +41,7 @@ it("M16/M17 offline native edit/test/diff, restart, clean authorship and candida
                         options.onSpawn?.();
                         writeFileSync(args[args.indexOf("--cidfile") + 1]!, "a".repeat(64));
                         const input = JSON.parse(options.input!);
+                        expect(Object.keys(input.files).filter(path => path.startsWith("tasks/runs/"))).toEqual([]);
                         if (input.command.argv[0] === "fixture-tests") {
                             tested++;
                             expect(input.files["fixture.txt"]).toBe("new\n");
@@ -52,6 +55,8 @@ it("M16/M17 offline native edit/test/diff, restart, clean authorship and candida
         expect(model.requests).toHaveLength(4);
         expect(git(root, "branch", "--show-current")).toBe("tasks/native");
         expect(git(root, "rev-parse", "main")).toBe(main);
+        expect(readFileSync(join(root, "tasks/runs/prior-report.json"), "utf8")).toBe('{"reserved":"evidence"}\n');
+        expect(git(root, "diff", "HEAD", "--", "tasks/runs/.gitkeep", "tasks/runs/prior-report.json")).toBe("");
         const att = report.builder!.nativeAttestation!;
         const events = JSON.parse(readFileSync(join(root, att.eventLogPath), "utf8")) as {
             type: string;

@@ -1,0 +1,26 @@
+id: m17-native-evidence-input
+title: Exclude reserved evidence from native builder input
+goal: Fix the M17 native input copier so tracked reserved run evidence does not prevent authoring from the real repository's clean base.
+acceptance:
+  - Tracked tasks/runs files including the repository placeholder are excluded from the model workspace
+  - Invalid source paths still fail closed and reserved evidence remains outside writable task scope
+  - Offline native integration covers tracked evidence exclusion, restart and verified candidate binding
+  - pnpm test and pnpm typecheck pass and the exit gate passes
+allowed_paths:
+  - apps/cli/src/native-agent.ts
+  - apps/cli/test/native.test.ts
+  - tasks/m17-native-evidence-input.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "git *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+budget:
+  max_model_tokens: 40000
+  max_tool_calls: 100
+delivery:
+  type: pull_request
