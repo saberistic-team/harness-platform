@@ -1,0 +1,35 @@
+id: m17-native-authoring-policy
+title: Enforce focused native authoring and compiler feedback
+goal: Replace advisory M18 inspection limits with a tested permission profile, make process working-directory requirements explicit, and include strict typecheck in bounded offline feedback before a small live-model correction smoke test.
+acceptance:
+  - M18 policy permits only diagnostic source reads and the exact focused check; generic Node commands, listing, diffs and unrelated reads are denied
+  - Tool schema and runtime errors explain workspace-relative cwd and reject absolute cwd before execution
+  - Focused feedback runs tests then strict typecheck under one deadline and output budget without altering source
+  - Offline regressions cover policy denial, cwd rejection and test-pass/compiler-fail feedback
+  - A small manual Ollama smoke test demonstrates initial failure, model-authored correction and passing feedback without claiming M18 qualification
+  - Full tests, strict typecheck and exit gate pass
+allowed_paths:
+  - packages/tools/src/development.ts
+  - packages/tools/test/development.test.ts
+  - infra/docker/native-check.mjs
+  - infra/docker/native-test.md
+  - infra/docker/m18-permissions.json
+  - apps/cli/test/native-check.test.ts
+  - apps/cli/src/run.ts
+  - apps/cli/test/native.test.ts
+  - tasks/m17-native-authoring-policy.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "git *": allow
+    "node **": allow
+    "*": deny
+  network: deny
+  git.push: deny
+budget:
+  max_model_tokens: 40000
+  max_tool_calls: 100
+delivery:
+  type: pull_request

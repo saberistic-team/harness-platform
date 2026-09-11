@@ -147,3 +147,34 @@ it.each(["unstaged", "staged", "committed"])("M17 independent %s seeded source i
         rmSync(root, { recursive: true, force: true });
     }
 });
+
+it('bootstrap accepts native path-specific reads and the kernel denies unmatched files', async () => {
+    const root = fixture();
+    try {
+        const manifestPath = join(root, 'tasks/native.yaml');
+        writeFileSync(manifestPath, readFileSync(manifestPath, 'utf8').replace('fs.read: allow', 'fs.read:\n    fixture.txt: allow\n    "*": deny'));
+        const model = new FakeModel([
+            { toolCalls: [{ id: 'denied', name: 'fs.read', arguments: { path: 'tasks/native.yaml' } }] },
+            { toolCalls: [{ id: 'allowed', name: 'fs.read', arguments: { path: 'fixture.txt' } }] },
+            { content: 'done' },
+        ]);
+        const outcome = await runBootstrapTask({ cwd: root, manifestPath: 'tasks/native.yaml',
+            testCommand: 'node -e "process.exit(0)"', native: { image, modelAdapter: model,
+                executor: { async execute(_program, args, options) {
+                    const result = { exitCode: 0, stdout: '', stderr: '', timedOut: false, aborted: false, outputTruncated: false };
+                    if (args[0] === 'rm') return result;
+                    options.onSpawn?.();
+                    writeFileSync(args[args.indexOf('--cidfile') + 1]!, 'a'.repeat(64));
+                    const input = JSON.parse(options.input!);
+                    return { ...result, stdout: JSON.stringify({ version: 1, files: input.files, result: { exitCode: 0, stdout: '', stderr: '', timedOut: false } }) };
+                } },
+            },
+        });
+        expect(outcome.report.status, JSON.stringify(outcome.report)).toBe('passed');
+        const report = validateRunReport(outcome.report);
+        const events = JSON.parse(readFileSync(join(root, report.builder!.nativeAttestation!.eventLogPath), 'utf8'));
+        expect(events.some((event: {type: string; data: {action?: string; effect?: string}}) => event.type === 'policy.decision' && event.data.action === 'fs.read' && event.data.effect === 'deny')).toBe(true);
+        expect(JSON.stringify(model.requests)).not.toContain('title: Native fixture');
+        expect(JSON.stringify(model.requests)).toContain('old');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+});
