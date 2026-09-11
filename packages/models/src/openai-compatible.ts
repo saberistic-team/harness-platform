@@ -933,7 +933,10 @@ export class OpenAICompatibleModel implements Model {
         controller.signal,
       );
       const response = await Promise.race([operation, abortPromise]);
-      return { ...response, toolCalls: response.toolCalls.map(call => ({ ...call, name: canonical.get(call.name) ?? call.name })) };
+      return { ...response, toolCalls: response.toolCalls.map(call => {
+        if (call.name.startsWith("harness_") && !canonical.has(call.name)) throw new ModelProviderError("MODEL_INVALID_RESPONSE", "provider returned an unrecognized tool alias");
+        return { ...call, name: canonical.get(call.name) ?? call.name };
+      }) };
     } catch (cause) {
       if (cause instanceof ModelProviderError) throw cause;
       if (abortSource === "timeout") {
