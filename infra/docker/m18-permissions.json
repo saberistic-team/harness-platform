@@ -11,7 +11,8 @@
     "packages/sdk/src/task-manifest.ts": "allow",
     "packages/tools/src/development.ts": "allow",
     "tasks/m18-live-doctor.yaml": "allow",
-    "*": "deny"
+    "*": "deny",
+    "infra/docker/native-authoring.md": "allow"
   },
   "fs.list": "deny",
   "fs.write": "allow",
