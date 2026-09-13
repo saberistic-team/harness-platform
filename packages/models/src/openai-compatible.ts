@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   estimateTokens,
+  MAX_MODEL_REASONING_CHARS,
   type ChatMessage,
   type CompletionRequest,
   type CompletionResponse,
@@ -86,6 +87,7 @@ const assistantMessageSchema = z
   .object({
     role: z.literal("assistant"),
     content: z.string().nullable().optional(),
+    reasoning: z.string().max(MAX_MODEL_REASONING_CHARS).optional(),
     tool_calls: z.array(z.unknown()).max(MAX_TOOL_CALLS).optional(),
   });
 
@@ -1170,13 +1172,19 @@ export class OpenAICompatibleModel implements Model {
       case "user":
         return { role, content };
       case "assistant": {
+        const reasoning = requestProperty(message, "reasoning", `completion request messages[${index}].reasoning`);
+        if (reasoning !== undefined && (typeof reasoning !== "string" || reasoning.length > MAX_MODEL_REASONING_CHARS)) {
+          throw invalidRequest(`completion request messages[${index}].reasoning must be a bounded string`);
+        }
+        if (typeof reasoning === "string") chargeRequestBytes(byteBudget, reasoning, `completion request messages[${index}].reasoning`);
+        const providerState = reasoning === undefined ? {} : { reasoning };
         const toolCalls = requestProperty(
           message,
           "toolCalls",
           `completion request messages[${index}].toolCalls`,
         );
         if (toolCalls === undefined) {
-          return { role: "assistant", content };
+          return { role: "assistant", content, ...providerState };
         }
         const calls = readOrdinaryArray(
           toolCalls,
@@ -1184,7 +1192,7 @@ export class OpenAICompatibleModel implements Model {
           MAX_TOOL_CALLS,
         );
         if (calls.length === 0) {
-          return { role: "assistant", content };
+          return { role: "assistant", content, ...providerState };
         }
         const seen = new Set<string>();
         const mapped: Record<string, unknown>[] = [];
@@ -1211,6 +1219,7 @@ export class OpenAICompatibleModel implements Model {
           role: "assistant",
           content: content.length > 0 ? content : null,
           tool_calls: mapped,
+          ...providerState,
         };
       }
       case "tool": {
@@ -1500,7 +1509,7 @@ export class OpenAICompatibleModel implements Model {
           completionTokens: parsed.data.usage.completion_tokens,
           totalTokens: parsed.data.usage.total_tokens,
         }
-      : this.estimateUsage(requestBody, content, toolCalls);
+      : this.estimateUsage(requestBody, content, toolCalls, choice.message.reasoning);
 
     if (
       parsed.data.usage &&
@@ -1516,6 +1525,7 @@ export class OpenAICompatibleModel implements Model {
     return {
       id: parsed.data.id,
       content,
+      ...(choice.message.reasoning === undefined ? {} : { reasoning: choice.message.reasoning }),
       toolCalls,
       usage,
       finishReason,
@@ -1582,6 +1592,7 @@ export class OpenAICompatibleModel implements Model {
     requestBody: Record<string, unknown>,
     content: string,
     toolCalls: ToolCall[],
+    reasoning?: string,
   ): Usage {
     const prompt = JSON.stringify({
       messages: requestBody.messages,
@@ -1589,6 +1600,7 @@ export class OpenAICompatibleModel implements Model {
     });
     const completion = [
       content,
+      ...(reasoning === undefined ? [] : [reasoning]),
       ...toolCalls.map((call) =>
         JSON.stringify({ name: call.name, arguments: call.arguments }),
       ),

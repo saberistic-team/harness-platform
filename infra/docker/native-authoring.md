@@ -50,3 +50,18 @@ needed. Range results include `startLine`, `endLine`, `totalLines`, `totalSize`,
 and `hasMore`; `size` counts returned UTF-8 bytes. Omit both range arguments only
 when you need the full file, such as before replacing it with `fs.write`.
 This limits model context, not filesystem authorization or workspace read limits.
+
+For the manual Ollama Qwen3.8 lane, record the exact model digest and request
+profile with the evidence. The model's thinking sampling profile is temperature
+1.0 and top_p 0.95; use an explicitly supported reasoning effort such as medium.
+The local Ollama API maps reasoning_effort none to disabled thinking. Do not
+silently force temperature zero or assume that disabling thinking is required
+for tool use. Confirm settings against the installed model and server:
+https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/README.md
+
+The compatible adapter retains Ollama's optional reasoning field in assistant
+history and native durable checkpoints. Keep this provider state separate from
+answer text. Verify a small denial → failed check → correction → passing check
+fixture before a full live authoring run. A successful fixture establishes
+adapter operation; it does not qualify the M18 builder or prove that sampling
+settings alone fix an authoring failure. CI remains entirely offline.

@@ -19,6 +19,8 @@ export interface UserChatMessage {
 export interface AssistantChatMessage {
   role: "assistant";
   content: string;
+  /** Provider continuation state; never rendered as assistant answer text. */
+  reasoning?: string;
   /** Tool calls made by this assistant turn, retained in conversation history. */
   toolCalls?: readonly ToolCall[];
 }
@@ -102,6 +104,7 @@ export interface ModelRequest extends CompletionRequest {
 export interface CompletionResponse {
   id: string;
   content: string;
+  reasoning?: string;
   toolCalls: ToolCall[];
   usage: Usage;
   finishReason: FinishReason;
@@ -115,6 +118,7 @@ export interface CompletionResponse {
  * yielding them.
  */
 export const MAX_MODEL_TEXT_DELTA_CHARS = 1024 * 1024;
+export const MAX_MODEL_REASONING_CHARS = 1024 * 1024;
 
 /**
  * An incremental assistant-text fragment, in provider delivery order.

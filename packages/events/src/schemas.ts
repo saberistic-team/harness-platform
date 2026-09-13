@@ -311,6 +311,16 @@ export const modelResponse = envelope(
   }),
 );
 
+/** Provider continuation state, kept separate from rendered assistant text. */
+export const modelReasoning = envelope(
+  "model.reasoning",
+  z.object({
+    ...runtimeIdentity,
+    requestId: id,
+    reasoning: z.string().max(1024 * 1024),
+  }).strict(),
+);
+
 export const toolCall = envelope(
   "tool.call",
   z.object({
@@ -640,6 +650,7 @@ export const eventSchemas = {
   "turn.completed": turnCompleted,
   "model.request": modelRequest,
   "model.response": modelResponse,
+  "model.reasoning": modelReasoning,
   "tool.call": toolCall,
   "tool.result": toolResult,
   "task.updated": taskUpdated,

@@ -1,3 +1,4 @@
+import { MAX_MODEL_REASONING_CHARS } from "@harness/models";
 import type {
   ChatMessage,
   JsonValue,
@@ -250,9 +251,14 @@ function cloneMessage(value: unknown, path: string): ChatMessage {
       assertOnlyKeys(source, ["role", "content"], path);
       return Object.freeze({ role, content });
     case "assistant": {
-      assertOnlyKeys(source, ["role", "content", "toolCalls"], path);
+      assertOnlyKeys(source, ["role", "content", "toolCalls", "reasoning"], path);
+      const reasoning = ownValue(source, "reasoning", `${path}.reasoning`);
+      if (reasoning !== undefined && (typeof reasoning !== "string" || reasoning.length > MAX_MODEL_REASONING_CHARS)) {
+        return invalid(`${path}.reasoning must be a bounded string`);
+      }
+      const providerState = reasoning === undefined ? {} : { reasoning: reasoning as string };
       const rawCalls = ownValue(source, "toolCalls", `${path}.toolCalls`);
-      if (rawCalls === undefined) return Object.freeze({ role, content });
+      if (rawCalls === undefined) return Object.freeze({ role, content, ...providerState });
       const toolCalls = arrayValues(rawCalls, `${path}.toolCalls`).map(
         (call, index) => cloneToolCall(call, `${path}.toolCalls[${index}]`),
       );
@@ -260,6 +266,7 @@ function cloneMessage(value: unknown, path: string): ChatMessage {
         role,
         content,
         toolCalls: Object.freeze(toolCalls),
+        ...providerState,
       });
     }
     case "tool":
