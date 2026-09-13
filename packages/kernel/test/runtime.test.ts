@@ -2590,6 +2590,51 @@ it.each(['exit', 'timeout', 'throw'] as const)('bounds repeated unchanged %s fai
   expectOneTerminalOutcome(outcome.events, 'failed');
 });
 
+it('bounds repeated failed execution outcomes while retaining changing diagnostics', async () => {
+  const outputs: { exitCode: number; stdout: string; stderr: string; timedOut: boolean }[] = [];
+  const tools = new ToolRegistry([createBoundedTool({
+    name: 'check', description: 'test runner with volatile diagnostics', parameters: z.object({ argv: z.array(z.string()) }),
+    execute: () => {
+      const attempt = outputs.length + 1;
+      const output = { exitCode: 1, stdout: `Start at 20:12:0${attempt}; duration ${attempt}s`,
+        stderr: `Missing module; temporary path /tmp/check-${attempt}`, timedOut: false };
+      outputs.push(output);
+      return output;
+    },
+  }, { kind: 'workspace', access: 'execute', capability: 'execute', root: '/virtual/workspace' })]);
+  const model = new FakeModel([...Array.from({ length: 4 }, (_, i) => ({
+    toolCalls: [{ id: `c${i}`, name: 'check', arguments: { argv: ['check'] } }],
+  })), { content: 'done' }]);
+  const outcome = await collectOutcome(new MinimalAgentRuntime().run(makeInput(model, new RecordingEventStore(), {
+    tools, workspace: fakeWorkspace(), permission: { decide: () => ({ effect: 'allow', reason: 'fixture' }) },
+  })));
+  expect(outcome.error).toMatchObject({ code: 'RUNTIME_REPEATED_TOOL_FAILURE' });
+  expect(model.requests).toHaveLength(3);
+  expect(outputs).toHaveLength(3);
+  const recorded = outcome.events.filter(e => e.type === 'tool.result').map(e => e.data);
+  expect(recorded).toEqual(outputs.map(output => expect.objectContaining({ ok: true, output })));
+  const observations = outcome.events.flatMap(e => e.type === 'message.completed' && e.data.role === 'tool'
+    ? [JSON.parse(e.data.content)] : []);
+  expect(observations).toEqual(outputs);
+  expectOneTerminalOutcome(outcome.events, 'failed');
+});
+
+it('permits changed command inputs despite the same failed outcome', async () => {
+  let executions = 0;
+  const tools = new ToolRegistry([createBoundedTool({
+    name: 'check', description: 'failed command', parameters: z.object({ argv: z.array(z.string()) }),
+    execute: () => { executions++; return { exitCode: 1, stdout: '', stderr: 'fixture' }; },
+  }, { kind: 'workspace', access: 'execute', capability: 'execute', root: '/virtual/workspace' })]);
+  const model = new FakeModel([...['first', 'first', 'second', 'second'].map((arg, i) => ({
+    toolCalls: [{ id: `c${i}`, name: 'check', arguments: { argv: ['check', arg] } }],
+  })), { content: 'done' }]);
+  const events = await collect(new MinimalAgentRuntime().run(makeInput(model, new RecordingEventStore(), {
+    tools, workspace: fakeWorkspace(), permission: { decide: () => ({ effect: 'allow', reason: 'fixture' }) },
+  })));
+  expect(executions).toBe(4);
+  expectOneTerminalOutcome(events, 'completed');
+});
+
 it('permits changed failures, an intervening edit, and successful recovery', async () => {
   let executions = 0;
   let edits = 0;

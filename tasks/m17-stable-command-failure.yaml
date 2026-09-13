@@ -1,0 +1,23 @@
+id: m17-stable-command-failure
+title: Bound repeated command failures despite changing diagnostic output
+goal: Stop the live M18 retry loop when the same command keeps failing with the same execution outcome but its test timestamps or durations change.
+acceptance:
+  - Three consecutive calls with the same input and failed execution outcome stop before a fourth model request even when stdout and stderr vary
+  - Original command output remains unchanged in model observations and recorded tool results
+  - Changed exit outcomes, changed command input, intervening actions, and successful execution still allow recovery
+  - Existing safe-continuation coverage and offline tests remain green
+  - pnpm test, pnpm typecheck, and the exit gate pass
+allowed_paths:
+  - packages/kernel/src/runtime.ts
+  - packages/kernel/test/runtime.test.ts
+  - tasks/m17-stable-command-failure.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+delivery:
+  type: pull_request
