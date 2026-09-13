@@ -2776,7 +2776,13 @@ export class MinimalAgentRuntime implements AgentRuntime {
       normalized.value !== null && typeof normalized.value === "object") {
       const output = normalized.value as Record<string, unknown>;
       if ((typeof output.exitCode === "number" && output.exitCode !== 0) || output.timedOut === true) {
-        await this.recordToolFailure(state, previousFailure, call, validatedInput, output);
+        // Diagnostics can contain timestamps, durations, and temporary paths.
+        // Preserve them in the observation above, but compare execution outcomes
+        // so volatile text cannot reset the consecutive-failure guard.
+        await this.recordToolFailure(state, previousFailure, call, validatedInput, {
+          exitCode: output.exitCode,
+          timedOut: output.timedOut === true,
+        });
       }
     }
   }
