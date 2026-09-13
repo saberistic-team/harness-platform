@@ -255,3 +255,42 @@ it('preserves repeated-denial guard across a safe restart', async () => {
     expect(events.filter(e => e.type === 'runtime.continued')).toHaveLength(1);
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+it('preserves repeated-execution-failure guard across a safe restart', async () => {
+  const { createBoundedTool, ToolRegistry } = await import('@harness/tools');
+  const { z } = await import('zod');
+  const root = mkdtempSync(join(tmpdir(), 'failure-restart-'));
+  let time = '2026-01-01T00:00:00Z';
+  const path = join(root, 's.db');
+  let store = openSqliteStore(path, { now: () => time });
+  let executions = 0;
+  const tools = new ToolRegistry([createBoundedTool({ name: 'denied', description: 'fixture',
+    parameters: z.object({}), inputSchema: { type: 'object' }, execute: () => { executions++; throw Error('unchanged failure'); },
+  }, { kind: 'pure' })]);
+  try {
+    await store.createSession({ sessionId: 's', metadata: { ownerId: 'old', leaseExpiresAt: '2026-01-01T00:00:01Z' } });
+    const original = new SessionEventStore(store, 's', 'old');
+    let dead = false;
+    let requests = 0;
+    const crash: EventStore = { checkpointVersion: 1, readSession: original.readSession.bind(original), async append(e) {
+      if (e.type === 'model.request' && ++requests === 3) dead = true;
+      if (dead) throw Error('lost process before third request');
+      await original.append(e);
+    } };
+    const model = new FakeModel([1, 2, 3].map(i => ({ toolCalls: [{ id: `call-${i}`, name: 'denied', arguments: {} }] })));
+    const input = { runId: 'r', sessionId: 's', turnId: 't', input: 'work', model: 'fake', modelAdapter: model,
+      tools, permission: { decide: () => ({ effect: 'allow' as const, reason: 'fixture' }) }, eventStore: crash };
+    await expect(collect(new MinimalAgentRuntime().run(input))).rejects.toThrow();
+    expect(model.requests).toHaveLength(2);
+    store.close(); time = '2026-01-01T00:00:02Z';
+    store = openSqliteStore(path, { now: () => time });
+    const recovered = new SessionEventStore(store, 's', 'new');
+    const stream = await new MinimalAgentRuntime().continue({ ...input, eventStore: recovered });
+    await expect(collect(stream)).rejects.toMatchObject({ code: 'RUNTIME_REPEATED_TOOL_FAILURE' });
+    expect(model.requests).toHaveLength(3);
+    expect(executions).toBe(3);
+    const events = await collect(recovered.readSession('s'));
+    expect(events.filter(e => e.type === 'tool.result')).toHaveLength(3);
+    expect(events.filter(e => e.type === 'runtime.continued')).toHaveLength(1);
+  } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});

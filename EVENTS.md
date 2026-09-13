@@ -389,3 +389,19 @@ order do not. The optional `runtime.checkpoint.payload.deniedCallStreak` stores
 only a SHA-256 fingerprint and count, so safe continuation preserves this bound.
 Legacy checkpoints without the field start with no streak. This guard is a
 terminal failure, not permission escalation or an automatic retry.
+
+### Repeated unchanged execution failures
+
+The native runtime records the third consecutive identical execution failure,
+then emits `error` and `turn.completed` with `RUNTIME_REPEATED_TOOL_FAILURE`.
+Execution exceptions and nonzero/timed-out results from the reviewed workspace
+`execute` capability count. The three attempts run; no fourth model request or
+automatic retry follows. Permission denials retain their separate guard.
+
+The fingerprint covers the tool, validated arguments, and complete failure
+result, ignoring JSON object key order and model call IDs. Changed results,
+successful calls, or any intervening tool attempt reset this consecutive streak.
+An edit followed by a check therefore remains possible. This is an exact-result
+bound, not a detector of every possible loop or a reason to loosen policy.
+`runtime.checkpoint.payload.failedCallStreak` optionally persists the fingerprint
+and count for safe continuation; older checkpoints start without a streak.

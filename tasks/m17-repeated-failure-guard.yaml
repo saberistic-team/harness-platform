@@ -1,0 +1,26 @@
+id: m17-repeated-failure-guard
+title: Stop repeated unchanged execution failures in the native runtime
+goal: Bound the M18 no-test-file loop by recognizing identical permitted process failures and preserving the bound through restart.
+acceptance:
+  - Three consecutive identical execution failures stop with RUNTIME_REPEATED_TOOL_FAILURE before a fourth request
+  - Nonzero process exits and thrown tool errors count without altering tool output or permissions
+  - Changed output, intervening edits, and successful calls permit recovery
+  - Safe continuation preserves the failure count and does not replay uncertain work
+  - Offline tests, typecheck, and exit gate pass
+allowed_paths:
+  - packages/kernel/src/runtime.ts
+  - packages/kernel/src/checkpoint.ts
+  - packages/kernel/test/runtime.test.ts
+  - packages/kernel/test/continuation.test.ts
+  - EVENTS.md
+  - tasks/m17-repeated-failure-guard.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+delivery:
+  type: pull_request

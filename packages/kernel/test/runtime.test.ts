@@ -2565,3 +2565,55 @@ it('allows recovery from denial and resets the streak on a different attempt', a
   expect(executions).toBe(1);
   expectOneTerminalOutcome(events, 'completed');
 });
+
+it.each(['exit', 'timeout', 'throw'] as const)('bounds repeated unchanged %s failures before a fourth request', async mode => {
+  let executions = 0;
+  const output = { exitCode: mode === 'timeout' ? 0 : 1, stdout: '', stderr: 'No test files found', timedOut: mode === 'timeout' };
+  const tools = new ToolRegistry([createBoundedTool({
+    name: 'check', description: 'offline failing process', parameters: z.object({ argv: z.array(z.string()) }),
+    inputSchema: { type: 'object' }, execute: () => {
+      executions++;
+      if (mode === 'throw') throw Error('unchanged failure');
+      return output;
+    },
+  }, { kind: 'workspace', access: 'execute', capability: 'execute', root: '/virtual/workspace' })]);
+  const model = new FakeModel([...Array.from({ length: 4 }, (_, i) => ({ toolCalls: [{ id: `c${i}`, name: 'check', arguments: { argv: ['check'] } }] })), { content: 'done' }]);
+  const outcome = await collectOutcome(new MinimalAgentRuntime().run(makeInput(model, new RecordingEventStore(), {
+    tools, workspace: fakeWorkspace(), permission: { decide: () => ({ effect: 'allow', reason: 'fixture' }) },
+  })));
+  expect(outcome.error).toMatchObject({ code: 'RUNTIME_REPEATED_TOOL_FAILURE' });
+  expect(model.requests).toHaveLength(3);
+  expect(executions).toBe(3);
+  expect(outcome.events.filter(e => e.type === 'tool.result')).toHaveLength(3);
+  if (mode !== 'throw') expect(outcome.events.find(e => e.type === 'tool.result')?.data).toMatchObject({ ok: true, output });
+  expect(outcome.events.find(e => e.type === 'error')?.data).toMatchObject({ code: 'RUNTIME_REPEATED_TOOL_FAILURE', retryable: false });
+  expectOneTerminalOutcome(outcome.events, 'failed');
+});
+
+it('permits changed failures, an intervening edit, and successful recovery', async () => {
+  let executions = 0;
+  let edits = 0;
+  const results = [1, 1, 2, 2, 2, 2, 0, 1, 1];
+  const tools = new ToolRegistry([
+    createBoundedTool({ name: 'check', description: 'changing results', parameters: z.object({}),
+      execute: () => ({ exitCode: results[executions++], stdout: '', stderr: 'fixture' }),
+    }, { kind: 'workspace', access: 'execute', capability: 'execute', root: '/virtual/workspace' }),
+    createBoundedTool({ name: 'edit', description: 'fixture edit', parameters: z.object({}), execute: () => { edits++; return {}; } }, { kind: 'pure' }),
+  ]);
+  const names = ['check', 'check', 'check', 'check', 'edit', 'check', 'check', 'check', 'check', 'check'];
+  const model = new FakeModel([...names.map((name, i) => ({ toolCalls: [{ id: `c${i}`, name, arguments: {} }] })), { content: 'done' }]);
+  const events = await collect(new MinimalAgentRuntime().run(makeInput(model, new RecordingEventStore(), {
+    tools, workspace: fakeWorkspace(), budget: { maxSteps: 16 }, permission: { decide: () => ({ effect: 'allow', reason: 'fixture' }) },
+  })));
+  expect(executions).toBe(9);
+  expect(edits).toBe(1);
+  expectOneTerminalOutcome(events, 'completed');
+});
+
+it('does not interpret arbitrary pure tool data as process failure', async () => {
+  const tools = new ToolRegistry([createBoundedTool({ name: 'data', description: 'ordinary data', parameters: z.object({}),
+    execute: () => ({ exitCode: 1 }),
+  }, { kind: 'pure' })]);
+  const model = new FakeModel([...Array.from({ length: 4 }, (_, i) => ({ toolCalls: [{ id: `c${i}`, name: 'data', arguments: {} }] })), { content: 'done' }]);
+  expectOneTerminalOutcome(await collect(new MinimalAgentRuntime().run(makeInput(model, new RecordingEventStore(), { tools }))), 'completed');
+});
