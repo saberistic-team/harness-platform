@@ -1,0 +1,31 @@
+id: m17-provider-reasoning-history
+title: Preserve local provider reasoning through native continuation
+goal: Preserve bounded optional provider reasoning in model responses, assistant history, durable events and restored context so the thinking-enabled Ollama lane can continue without dropping provider state.
+acceptance:
+  - Ollama reasoning round-trips through the compatible adapter and assistant history without becoming rendered answer text
+  - Safe-boundary continuation preserves reasoning and does not duplicate tool execution
+  - Malformed or oversized reasoning fails explicitly and reasoning is included in estimated usage and context limits
+  - Existing completions and checkpoints without reasoning remain compatible
+  - Offline tests, typecheck and exit gate pass; manual Qwen evidence is recorded separately from CI
+allowed_paths:
+  - packages/events/src/schemas.ts
+  - packages/events/test/**
+  - packages/models/src/model.ts
+  - packages/models/src/openai-compatible.ts
+  - packages/models/test/**
+  - packages/kernel/src/runtime.ts
+  - packages/kernel/src/state.ts
+  - packages/kernel/test/**
+  - EVENTS.md
+  - infra/docker/native-authoring.md
+  - tasks/m17-provider-reasoning-history.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+delivery:
+  type: pull_request

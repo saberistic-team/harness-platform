@@ -6,6 +6,7 @@ import {
   addUsage,
   emptyUsage,
   MAX_MODEL_TEXT_DELTA_CHARS,
+  MAX_MODEL_REASONING_CHARS,
   type ChatMessage,
   type CompletionResponse,
   type ModelAdapter as ModelAdapterPort,
@@ -552,12 +553,16 @@ function cloneContext(messages: readonly ChatMessage[] | undefined): ChatMessage
       case "user":
         return { role: message.role, content: message.content };
       case "assistant":
+        if (message.reasoning !== undefined && (typeof message.reasoning !== "string" || message.reasoning.length > MAX_MODEL_REASONING_CHARS)) {
+          throw new InvalidRunInputError("assistant reasoning must be a bounded string");
+        }
         if (message.toolCalls !== undefined && !Array.isArray(message.toolCalls)) {
           throw new InvalidRunInputError("assistant toolCalls must be an array");
         }
         return {
           role: "assistant",
           content: message.content,
+          ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
           toolCalls: message.toolCalls?.map((call) => {
             if (!call || typeof call !== "object") {
               throw new InvalidRunInputError("every context tool call must be an object");
@@ -640,6 +645,7 @@ function snapshotDataRecord(
   value: unknown,
   keys: readonly string[],
   label: string,
+  optionalKeys: readonly string[] = [],
 ): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new ModelStreamError(`${label} must be a plain data object`);
@@ -655,7 +661,7 @@ function snapshotDataRecord(
   if (prototype !== Object.prototype && prototype !== null) {
     throw new ModelStreamError(`${label} must be a plain data object`);
   }
-  const allowed = new Set(keys);
+  const allowed = new Set([...keys, ...optionalKeys]);
   const snapshot: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const key of Reflect.ownKeys(descriptors)) {
     if (typeof key !== "string" || !allowed.has(key)) {
@@ -957,6 +963,7 @@ function normalizeCompletion(
     response,
     ["id", "content", "toolCalls", "usage", "finishReason"],
     "model completion",
+    ["reasoning"],
   );
   const rawCalls = snapshotDenseArray(
     snapshot.toolCalls,
@@ -974,6 +981,7 @@ function normalizeCompletion(
     snapshot.id.length > MAX_ID_LENGTH ||
     typeof snapshot.content !== "string" ||
     snapshot.content.length > MAX_RESPONSE_CHARS ||
+    (snapshot.reasoning !== undefined && (typeof snapshot.reasoning !== "string" || snapshot.reasoning.length > MAX_MODEL_REASONING_CHARS)) ||
     rawCalls.length > MAX_TOOL_CALLS_PER_RESPONSE ||
     typeof snapshot.finishReason !== "string" ||
     !["stop", "tool_calls", "length", "error"].includes(snapshot.finishReason) ||
@@ -1035,6 +1043,7 @@ function normalizeCompletion(
   return {
     id: snapshot.id,
     content: snapshot.content,
+    ...(snapshot.reasoning === undefined ? {} : { reasoning: snapshot.reasoning as string }),
     toolCalls: normalizedCalls,
     usage: {
       promptTokens: usage.promptTokens as number,
@@ -2262,6 +2271,13 @@ export class MinimalAgentRuntime implements AgentRuntime {
       turnId: state.input.turnId,
     }, this.eventOptions(state)));
 
+    if (completed.reasoning !== undefined) {
+      await this.publish(state, createEvent("model.reasoning", {
+        runId: state.input.runId, sessionId: state.input.sessionId, turnId: state.input.turnId,
+        requestId, reasoning: completed.reasoning,
+      }, this.eventOptions(state)));
+    }
+
     if (summaryContext) {
       await this.checkModelRequestBudgets(state);
       if (completed.finishReason !== "stop" || completed.toolCalls.length || !completed.content.trim()) {
@@ -2273,6 +2289,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
     state.messageState = appendMessage(state.messageState, {
       role: "assistant",
       content: completed.content,
+      ...(completed.reasoning === undefined ? {} : { reasoning: completed.reasoning }),
       toolCalls: completed.toolCalls.length > 0 ? completed.toolCalls : undefined,
     });
     await this.publish(state, createEvent("message.completed", {

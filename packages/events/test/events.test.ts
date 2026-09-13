@@ -44,6 +44,7 @@ function samples(): Array<{ type: EventType; event: AnyHarnessEvent }> {
       type: "model.response",
       event: createEvent("model.response", { requestId: "req-1", model: "fake-model/v1", finishReason: "stop", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 }, runId: "run-1", sessionId: "sess-1", turnId: "turn-1" }, opts),
     },
+    { type: "model.reasoning", event: createEvent("model.reasoning", { runId: "run-1", sessionId: "sess-1", turnId: "turn-1", requestId: "req-1", reasoning: "provider continuation fixture" }, opts) },
     { type: "tool.call", event: createEvent("tool.call", { callId: "call-1", tool: "read_file", input: { path: "README.md" }, runId: "run-1", sessionId: "sess-1", turnId: "turn-1", requestId: "req-1", modelCallId: "model-call-1" }, opts) },
     { type: "tool.result", event: createEvent("tool.result", { callId: "call-1", tool: "read_file", ok: true, output: "hello", durationMs: 3, runId: "run-1", sessionId: "sess-1", turnId: "turn-1" }, opts) },
     { type: "task.updated", event: createEvent("task.updated", { taskId: "kernel-0001", phase: "running", note: "started" }, opts) },

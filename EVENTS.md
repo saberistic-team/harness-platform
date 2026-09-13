@@ -54,6 +54,7 @@ Rules:
 | `turn.completed` | one admitted turn reaches a terminal outcome | `runId`, `sessionId`, `turnId`, `status`, `modelRequests`, `toolCalls`, `usage?`, `stateVersion?`, `messageRevision?` |
 | `model.request`  | a model step is durably dispatched      | `requestId`, `model`, `runId?`, `sessionId?`, `turnId?`, `step?`, `contextVersion?`, `messageRevision?` |
 | `model.response` | a model step returns                    | `requestId`, `finishReason`, `usage`, `runId?`, `sessionId?`, `turnId?` |
+| `model.reasoning` | optional provider continuation state is retained separately from answer text | `requestId`, `runId`, `sessionId`, `turnId`, `reasoning` |
 | `tool.call`      | a model's requested tool intent is durable | `callId`, `tool`, `input`, `requestId?`, `modelCallId?` |
 | `tool.result`    | a tool attempt or typed pre-execution failure completes | `callId`, `ok`, `output|error`, `runId?`, `sessionId?`, `turnId?` |
 | `task.updated`   | a manifest's phase changes              | `taskId`, `phase`                 |
@@ -412,3 +413,15 @@ With a range, `tool.result.output` identifies the returned `startLine`, `endLine
 Without range arguments its existing whole-file output is unchanged. Out-of-file
 ranges return `TOOL_WORKSPACE_INVALID_RANGE`; input bounds and the full-file byte
 limit still apply. No new event type or permission action is introduced.
+
+`model.reasoning` follows `model.response` when a completion includes the
+compatible provider's optional `reasoning` string. It is continuation data, not
+a `message.delta` or rendered `message.completed.content`. The same string is
+retained in assistant context and durable runtime checkpoints, then returned in
+the next provider request, including after safe-boundary continuation. Missing
+reasoning leaves legacy events and history unchanged. Reasoning is limited to
+1 Mi characters, charged to request bytes and context occupancy, and included
+in estimated completion usage when the provider omits usage. Malformed or
+oversized values fail through the existing typed model/state errors. A crash
+before the next safe checkpoint still represents uncertain work and cannot
+re-execute automatically.
