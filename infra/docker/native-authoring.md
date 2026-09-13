@@ -43,3 +43,10 @@ including whitespace-only configuration, untracked Git files, packed refs and
 linked worktrees when requested. A copied tool-name array does not test the
 canonical catalog; import the actual export. A status-only assertion with no
 error details does not provide actionable failure feedback.
+
+Use `fs.read` with `startLine` (1-based) and `maxLines` (1–400) to inspect
+source excerpts. Start with about 80 lines and request another range only when
+needed. Range results include `startLine`, `endLine`, `totalLines`, `totalSize`,
+and `hasMore`; `size` counts returned UTF-8 bytes. Omit both range arguments only
+when you need the full file, such as before replacing it with `fs.write`.
+This limits model context, not filesystem authorization or workspace read limits.

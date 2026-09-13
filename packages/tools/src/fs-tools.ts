@@ -9,6 +9,11 @@ export interface ReadFileResult {
   path: string;
   content: string;
   size: number;
+  startLine?: number;
+  endLine?: number;
+  totalLines?: number;
+  totalSize?: number;
+  hasMore?: boolean;
 }
 
 export type WorkspaceFileAccessErrorCode =
@@ -18,7 +23,8 @@ export type WorkspaceFileAccessErrorCode =
   | "TOOL_WORKSPACE_NOT_FILE"
   | "TOOL_WORKSPACE_CHANGED"
   | "TOOL_WORKSPACE_TOO_LARGE"
-  | "TOOL_WORKSPACE_READ_FAILED";
+  | "TOOL_WORKSPACE_READ_FAILED"
+  | "TOOL_WORKSPACE_INVALID_RANGE";
 
 /** Tool results stay bounded independently of the injected adapter. */
 export const READ_FILE_MAX_BYTES = 128 * 1024;
@@ -53,6 +59,7 @@ function workspaceBoundaryRoot(workspaceRoot: string): string {
 async function readWorkspaceFile(
   path: string,
   context: ToolExecutionContext | undefined,
+  range?: { startLine: number; maxLines: number },
 ): Promise<ReadFileResult> {
   if (context?.workspace === undefined) {
     throw new WorkspaceOperationRequiredError(
@@ -80,6 +87,17 @@ async function readWorkspaceFile(
     );
   }
 
+  if (range) {
+    const lines = content.match(/[^\n]*\n|[^\n]+$/g) ?? [""];
+    if (range.startLine > lines.length) {
+      throw new WorkspaceFileAccessError("TOOL_WORKSPACE_INVALID_RANGE", `startLine exceeds ${lines.length} lines`);
+    }
+    const endLine = Math.min(lines.length, range.startLine + range.maxLines - 1);
+    const excerpt = lines.slice(range.startLine - 1, endLine).join("");
+    return { path, content: excerpt, size: Buffer.byteLength(excerpt, "utf8"),
+      startLine: range.startLine, endLine, totalLines: lines.length,
+      totalSize: size, hasMore: endLine < lines.length };
+  }
   return { path, content, size };
 }
 
@@ -92,11 +110,11 @@ export function createReadFileTool(workspaceRoot: string): Tool {
   const root = workspaceBoundaryRoot(workspaceRoot);
   return createBoundedTool({
     name: "fs.read",
-    description: "Read a UTF-8 text file from the workspace.",
-    parameters: z.object({ path: z.string().min(1).max(4096) }).strict(),
+    description: "Read UTF-8 workspace text. Prefer startLine (1-based) and maxLines (1-400) for source excerpts. Omit both for a whole file. A range defaults to startLine 1 and maxLines 200; returned metadata identifies omitted lines.",
+    parameters: z.object({ path: z.string().min(1).max(4096), startLine: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(), maxLines: z.number().int().min(1).max(400).optional() }).strict(),
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string", minLength: 1 } },
+      properties: { path: { type: "string", minLength: 1 }, startLine: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, maxLines: { type: "integer", minimum: 1, maximum: 400 } },
       required: ["path"],
       additionalProperties: false,
     },
@@ -105,8 +123,8 @@ export function createReadFileTool(workspaceRoot: string): Tool {
       subject: (params as { path: string }).path,
       scope: "once",
     }),
-    execute: ({ path }, context): Promise<ReadFileResult> =>
-      readWorkspaceFile(path, context),
+    execute: ({ path, startLine, maxLines }, context): Promise<ReadFileResult> =>
+      readWorkspaceFile(path, context, startLine === undefined && maxLines === undefined ? undefined : { startLine: startLine ?? 1, maxLines: maxLines ?? 200 }),
   }, { kind: "workspace", access: "read", capability: "readFile", root });
 }
 
