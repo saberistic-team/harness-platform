@@ -161,3 +161,24 @@ describe("createReadFileTool", () => {
     );
   });
 });
+
+it('returns precise UTF-8 line excerpts with explicit omitted-content metadata', async () => {
+  const tool = createReadFileTool('/reviewed/workspace');
+  const workspace = new MemoryWorkspace('first\r\nhéllo\r\nlast\n');
+  expect(await tool.execute({ path: 'text', startLine: 2, maxLines: 1 }, { workspace })).toEqual({
+    path: 'text', content: 'héllo\r\n', size: Buffer.byteLength('héllo\r\n'),
+    startLine: 2, endLine: 2, totalLines: 3, totalSize: Buffer.byteLength('first\r\nhéllo\r\nlast\n'), hasMore: true,
+  });
+  expect(await tool.execute({ path: 'text', startLine: 3 }, { workspace })).toMatchObject({ content: 'last\n', endLine: 3, hasMore: false });
+  await expect(tool.execute({ path: 'text', startLine: 4 }, { workspace })).rejects.toMatchObject({ code: 'TOOL_WORKSPACE_INVALID_RANGE' });
+});
+
+it('bounds range inputs and preserves empty-file and whole-file behavior', async () => {
+  const tool = createReadFileTool('/reviewed/workspace');
+  for (const input of [{ startLine: 0 }, { startLine: 1.5 }, { maxLines: 0 }, { maxLines: 401 }, { maxLines: '2' }]) {
+    expect(tool.parameters.safeParse({ path: 'text', ...input }).success).toBe(false);
+  }
+  expect(await tool.execute({ path: 'text', maxLines: 2 }, { workspace: new MemoryWorkspace('') })).toMatchObject({ content: '', startLine: 1, endLine: 1, totalLines: 1, hasMore: false });
+  expect(await tool.execute({ path: 'text' }, { workspace: new MemoryWorkspace('one\ntwo') })).toEqual({ path: 'text', content: 'one\ntwo', size: 7 });
+  await expect(tool.execute({ path: 'text', maxLines: 1 }, { workspace: new MemoryWorkspace('x'.repeat(READ_FILE_MAX_BYTES + 1)) })).rejects.toMatchObject({ code: 'TOOL_WORKSPACE_TOO_LARGE' });
+});

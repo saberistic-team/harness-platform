@@ -1,0 +1,25 @@
+id: m17-bounded-source-reads
+title: Give native authoring real bounded source excerpts
+goal: Fix the mismatch between M18 excerpt instructions and whole-file-only reads, with offline range tests and recorded live feedback diagnostics.
+acceptance:
+  - fs.read supports explicit line ranges with accurate metadata and preserved whole-file compatibility
+  - Invalid ranges fail explicitly and cannot bypass workspace or full-file size limits
+  - Offline tests cover UTF-8, CRLF, EOF, empty files, and range bounds
+  - A small live Qwen test demonstrates denial recovery, failed check, source correction and success using the native path
+  - Full tests, typecheck and exit gate pass
+allowed_paths:
+  - packages/tools/src/fs-tools.ts
+  - packages/tools/test/fs-tools.test.ts
+  - infra/docker/native-authoring.md
+  - EVENTS.md
+  - tasks/m17-bounded-source-reads.yaml
+permissions:
+  fs.read: allow
+  fs.write: allow
+  process.exec:
+    "pnpm *": allow
+    "*": deny
+  network: deny
+  git.push: deny
+delivery:
+  type: pull_request

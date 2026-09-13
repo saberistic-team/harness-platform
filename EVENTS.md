@@ -405,3 +405,10 @@ An edit followed by a check therefore remains possible. This is an exact-result
 bound, not a detector of every possible loop or a reason to loosen policy.
 `runtime.checkpoint.payload.failedCallStreak` optionally persists the fingerprint
 and count for safe continuation; older checkpoints start without a streak.
+
+`fs.read` may accept optional `startLine` (1-based) and `maxLines` (1–400).
+With a range, `tool.result.output` identifies the returned `startLine`, `endLine`,
+`totalLines`, full-file `totalSize`, and `hasMore`; `size` is returned UTF-8 bytes.
+Without range arguments its existing whole-file output is unchanged. Out-of-file
+ranges return `TOOL_WORKSPACE_INVALID_RANGE`; input bounds and the full-file byte
+limit still apply. No new event type or permission action is introduced.
