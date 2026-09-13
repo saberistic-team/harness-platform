@@ -19,6 +19,7 @@ export interface RuntimeCheckpoint {
   toolCalls: number;
   toolTranscriptBytes: number;
   deniedCallStreak?: { fingerprint: string; count: number };
+  failedCallStreak?: { fingerprint: string; count: number };
   seenModelCallIds: string[];
   runPermissionGrants: string[];
   warnedBudgets: string[];
@@ -50,6 +51,7 @@ const schema = z.object({
   model: id, usage: z.object({ promptTokens: count, completionTokens: count, totalTokens: count }).strict(),
   modelRequests: count, toolCalls: count, toolTranscriptBytes: count,
   deniedCallStreak: z.object({ fingerprint: z.string().regex(/^[a-f0-9]{64}$/), count: z.number().int().min(1).max(3) }).strict().optional(),
+  failedCallStreak: z.object({ fingerprint: z.string().regex(/^[a-f0-9]{64}$/), count: z.number().int().min(1).max(3) }).strict().optional(),
   seenModelCallIds: z.array(id), runPermissionGrants: z.array(z.string()), warnedBudgets: z.array(z.enum(["steps", "tokens", "tool_calls"])),
   pendingSteering: z.array(z.object({ messageId: id, content: z.string().min(1).max(256 * 1024) }).strict()).max(128), sessionTurns: z.array(id).min(1),
   compaction: z.object({ version: z.literal(1), summary: z.string().min(1), tailStart: count, throughRevision: count }).strict().optional(),

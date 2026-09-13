@@ -167,7 +167,8 @@ export type AgentRuntimeErrorCode =
   | "RUNTIME_MODEL_TIMEOUT"
   | "RUNTIME_BUDGET_EXCEEDED"
   | "RUNTIME_CONSUMER_INVALID"
-  | "RUNTIME_REPEATED_DENIAL";
+  | "RUNTIME_REPEATED_DENIAL"
+  | "RUNTIME_REPEATED_TOOL_FAILURE";
 
 export class AgentRuntimeError extends Error {
   constructor(
@@ -263,8 +264,14 @@ export class RepeatedToolDenialError extends AgentRuntimeError {
   }
 }
 
+export class RepeatedToolFailureError extends AgentRuntimeError {
+  constructor(readonly tool: string) {
+    super("RUNTIME_REPEATED_TOOL_FAILURE", `stopped after 3 consecutive identical failures from ${tool}`);
+  }
+}
+
 // Inputs are already bounded JSON. Ignore object insertion order, preserve array order.
-function denialFingerprint(value: unknown): string {
+function toolAttemptFingerprint(value: unknown): string {
   const canonical = (item: unknown): unknown => Array.isArray(item)
     ? item.map(canonical)
     : item !== null && typeof item === "object"
@@ -357,6 +364,7 @@ interface RuntimeRunState {
   compaction?: CompactionState;
   toolTranscriptBytes: number;
   deniedCallStreak?: { fingerprint: string; count: number };
+  failedCallStreak?: { fingerprint: string; count: number };
   agentId?: string;
   workspaceSnapshot?: string;
   terminalPublished: boolean;
@@ -1191,7 +1199,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
       agentId:state.agentId,workspaceSnapshot:state.workspaceSnapshot,toolDefinitions:[...state.toolDefinitions],
       terminalStatus,messageState:state.messageState,model:state.input.model,usage:state.usage,
       modelRequests:state.modelRequests,toolCalls:state.toolCalls,toolTranscriptBytes:state.toolTranscriptBytes,
-      deniedCallStreak:state.deniedCallStreak,
+      deniedCallStreak:state.deniedCallStreak,failedCallStreak:state.failedCallStreak,
       seenModelCallIds:[...state.seenModelCallIds],runPermissionGrants:[...state.runPermissionGrants],warnedBudgets:[...state.warnedBudgets],
       pendingSteering:state.pendingSteering,sessionTurns:[...this.sessions.get(state.input.sessionId)!.turns],
       compaction:state.compaction,contextPolicy:state.input.contextPolicy,budget:state.input.budget,
@@ -1337,6 +1345,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
       state.toolTranscriptBytes = continuation.toolTranscriptBytes;
       state.compaction = continuation.compaction;
       state.deniedCallStreak = continuation.deniedCallStreak;
+      state.failedCallStreak = continuation.failedCallStreak;
       for (const id of continuation.seenModelCallIds) state.seenModelCallIds.add(id);
       for (const grant of continuation.runPermissionGrants) state.runPermissionGrants.add(grant);
       for (const metric of continuation.warnedBudgets) state.warnedBudgets.add(metric as RuntimeBudgetMetric);
@@ -2353,11 +2362,32 @@ export class MinimalAgentRuntime implements AgentRuntime {
     };
   }
 
+  private async recordToolFailure(
+    state: RuntimeRunState,
+    previous: RuntimeRunState["failedCallStreak"],
+    call: ToolCall,
+    input: unknown,
+    failure: unknown,
+  ): Promise<void> {
+    const fingerprint = toolAttemptFingerprint([call.name, input, failure]);
+    const count = previous?.fingerprint === fingerprint ? previous.count + 1 : 1;
+    state.failedCallStreak = { fingerprint, count };
+    if (count < 3) return;
+    const error = new RepeatedToolFailureError(call.name);
+    await this.publish(state, createEvent("error", {
+      code: error.code, message: error.message, runId: state.input.runId,
+      sessionId: state.input.sessionId, retryable: false,
+    }, this.eventOptions(state)));
+    throw error;
+  }
+
   private async processToolCall(
     state: RuntimeRunState,
     requestId: string,
     call: ToolCall,
   ): Promise<void> {
+    const previousFailure = state.failedCallStreak;
+    state.failedCallStreak = undefined;
     const previousDenial = state.deniedCallStreak;
     state.deniedCallStreak = undefined;
     const callLimit = state.input.budget?.maxToolCalls;
@@ -2532,7 +2562,7 @@ export class MinimalAgentRuntime implements AgentRuntime {
     const grantKey = permissionGrantKey(intent);
     const hasRunGrant = scope === "run" && state.runPermissionGrants.has(grantKey);
     if (decision.effect === "deny") {
-      const fingerprint = denialFingerprint([call.name, validatedInput, intent, denialCode]);
+      const fingerprint = toolAttemptFingerprint([call.name, validatedInput, intent, denialCode]);
       const count = previousDenial?.fingerprint === fingerprint ? previousDenial.count + 1 : 1;
       state.deniedCallStreak = { fingerprint, count };
       await this.publishToolObservation(state, runtimeCallId, call, {
@@ -2689,15 +2719,13 @@ export class MinimalAgentRuntime implements AgentRuntime {
       const message = error instanceof Error && error.message.length > 0
         ? error.message.slice(0, 4000)
         : "tool execution failed";
-      await this.publishToolObservation(state, runtimeCallId, call, {
-        ok: false,
-        error: {
-          code: error instanceof WorkspaceOperationError || error instanceof WorkspaceAdapterError
-            ? error.code
-            : "TOOL_EXECUTION_FAILED",
-          message: `tool ${call.name} failed: ${message}`.slice(0, 4096),
-        },
-      });
+      const failure = {
+        code: error instanceof WorkspaceOperationError || error instanceof WorkspaceAdapterError
+          ? error.code : "TOOL_EXECUTION_FAILED",
+        message: `tool ${call.name} failed: ${message}`.slice(0, 4096),
+      };
+      await this.publishToolObservation(state, runtimeCallId, call, { ok: false, error: failure });
+      await this.recordToolFailure(state, previousFailure, call, validatedInput, failure);
       return;
     }
 
@@ -2725,6 +2753,15 @@ export class MinimalAgentRuntime implements AgentRuntime {
       output: normalized.value,
       outputWire: normalized.wire,
     });
+    // A successful tool transport can still report a failed process. Inspect only
+    // the reviewed execute capability, not arbitrary similarly shaped tool data.
+    if (boundary?.kind === "workspace" && boundary.capability === "execute" &&
+      normalized.value !== null && typeof normalized.value === "object") {
+      const output = normalized.value as Record<string, unknown>;
+      if ((typeof output.exitCode === "number" && output.exitCode !== 0) || output.timedOut === true) {
+        await this.recordToolFailure(state, previousFailure, call, validatedInput, output);
+      }
+    }
   }
 
   private async runRounds(state: RuntimeRunState): Promise<string> {
